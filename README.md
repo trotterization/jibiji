@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="assets/jibiji-logo.png" alt="Jibiji 笔记 — a folded paper J with yellow, pink, and teal accents" width="260" />
+  <img src="assets/jibiji-logo.png" alt="Jibiji 笔记 — a folded paper J with yellow, pink, and teal accents" width="140" />
 </p>
-
-<h1 align="center">Jibiji · 笔记</h1>
 
 <p align="center">
   <strong>Write freely. Make sense of it later.</strong><br />
