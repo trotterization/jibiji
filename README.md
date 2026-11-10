@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/jibiji-logo.png" alt="Jibiji 笔记 — a folded paper J with yellow, pink, and teal accents" width="140" />
+  <img src="assets/jibiji-header.png" alt="Jibiji 笔记 — a folded paper J with yellow, pink, and teal accents" width="420" />
 </p>
 
 <p align="center">
