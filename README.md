@@ -1,10 +1,34 @@
-# Jibiji
+<p align="center">
+  <img src="assets/jibiji-logo.png" alt="Jibiji 笔记 — a folded paper J with yellow, pink, and teal accents" width="260" />
+</p>
 
-Write freely. Make sense of it later.
+<h1 align="center">Jibiji · 笔记</h1>
 
-Jibiji is a planned AI-assisted note-taking app based in Hangzhou, China. It helps people turn handwritten notes into readable text, useful summaries, and flashcards—even when their handwriting is messy.
+<p align="center">
+  <strong>Write freely. Make sense of it later.</strong><br />
+  Your handwriting. Clearer notes. A little help remembering.
+</p>
 
-> Status: early product plan. This README describes the proposed prototype, not features that are already built.
+<p align="center">
+  <strong>Hangzhou, China</strong> &nbsp; · &nbsp; 中文 / English &nbsp; · &nbsp; Early product planning
+</p>
+
+<p align="center">
+  <a href="#the-idea">The idea</a> &nbsp; / &nbsp;
+  <a href="#feature-plan">Features</a> &nbsp; / &nbsp;
+  <a href="#prototype-scope">Prototype</a> &nbsp; / &nbsp;
+  <a href="#milestones">Roadmap</a>
+</p>
+
+---
+
+Jibiji is a planned AI-assisted note-taking app based in Hangzhou, China. Turn handwritten pages into readable text, useful summaries, and flashcards, even when your handwriting is messy.
+
+> **We're planning the first prototype.** The features below describe the product we're working toward; they are not available in a released app yet.
+
+| 🟡 Write naturally | 🌸 See the big picture | 🟢 Remember more |
+| :--- | :--- | :--- |
+| Keep your handwriting and choose from AI suggestions when a word is unclear. | Turn a note or a day's work into a concise, source-linked recap. | Make editable flashcards from your notes and revisit what matters. |
 
 ## The idea
 
@@ -87,7 +111,18 @@ These are proposed components; the stack and model providers are still open.
 
 Suggested data flow:
 
-`Handwriting → recognition → user corrections → summary and flashcards → review`
+```mermaid
+flowchart LR
+    A[Handwritten page] --> B[Recognize handwriting]
+    B --> C[Review suggestions]
+    C --> D[Note summary]
+    C --> E[Flashcards]
+    D --> F[Daily recap]
+    E --> G[Study and remember]
+    style A fill:#fff3bf,stroke:#d4a923,color:#303236
+    style C fill:#ffe0e9,stroke:#ec86a2,color:#303236
+    style G fill:#d8f4f1,stroke:#16aaa8,color:#303236
+```
 
 Corrections should mark older summaries and cards as potentially outdated. AI requests should have clear loading, retry, and failure states, and a failed request should never lose the original note.
 
