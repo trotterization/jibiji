@@ -20,7 +20,7 @@
 
 ---
 
-Jibiji is a planned AI-assisted note-taking app based in Hangzhou, China. Turn handwritten pages into readable text, useful summaries, and flashcards, even when your handwriting is messy.
+Jibiji is a planned AI-assisted tablet app for taking notes in class, based in Hangzhou, China. Whether you are learning a language or studying another subject, turn handwritten pages into readable text, useful summaries, and flashcards, even when your handwriting is messy.
 
 > **We're planning the first prototype.** The features below describe the product we're working toward; they are not available in a released app yet.
 
@@ -32,11 +32,13 @@ Jibiji is a planned AI-assisted note-taking app based in Hangzhou, China. Turn h
 
 Taking notes should not require perfect handwriting or a second session spent organizing everything. Jibiji keeps the original handwriting and helps users understand, review, and remember what they wrote.
 
-The first audience is students and people who regularly take handwritten study or work notes. The initial product should support Chinese and English, including notes that mix both languages.
+Jibiji is for students taking notes in class, whether they are learning a language or studying any other subject. Language learners can capture vocabulary, grammar, and lesson examples; other students can capture explanations, concepts, and class exercises.
+
+The goal is a downloadable app across tablet platforms, including iPadOS and Android, rather than an app tied to one tablet brand. Exact device and operating-system support will be established during development. The initial handwriting recognition should support Chinese and English, including notes that mix both languages, with more languages planned over time.
 
 ## Core experience
 
-1. **Write a note.** Write on a digital page with a stylus or finger. For the prototype, importing a photo of a handwritten page is also a practical entry point.
+1. **Write a note.** Write class notes on a tablet with a stylus or finger. Importing a photo of a handwritten page provides another way to capture notes.
 2. **Resolve unclear handwriting.** AI recognizes the writing and offers possible readings for uncertain words or characters. Tap a suggestion, enter a correction, or leave the original unchanged.
 3. **Review a note summary.** Generate a short overview, key points, and any tasks explicitly recorded in the note.
 4. **See the day at a glance.** Get a daily recap of the notes created or edited that day, grouped by topic with links back to the source notes.
@@ -78,7 +80,7 @@ The first prototype should prove one complete loop: capture a page, correct its 
 
 | Area | First prototype |
 | --- | --- |
-| Capture | Import a handwritten page; add a basic writing canvas if feasible |
+| Capture | Write class notes on a tablet; import photos of handwritten pages |
 | Recognition | Chinese and English transcription with selectable alternatives |
 | Notes | Save, rename, edit, and reopen notes |
 | Summaries | Per-note summary and a daily recap screen |
@@ -86,7 +88,7 @@ The first prototype should prove one complete loop: capture a page, correct its 
 | Organization | Simple notebooks or tags |
 | Preferences | Language, timezone, recap time, and AI processing controls |
 
-Collaboration, audio transcription, advanced document formatting, and a full spaced-repetition system are outside the first prototype.
+The primary prototype experience is handwritten note-taking on a tablet. Photo import supports that experience. Collaboration, audio transcription, advanced document formatting, and a full spaced-repetition system are outside the first prototype.
 
 ## Suggested screens
 
@@ -101,7 +103,7 @@ Collaboration, audio transcription, advanced document formatting, and a full spa
 
 These are proposed components; the stack and model providers are still open.
 
-- **Client:** a tablet-friendly interface for page capture, correction, and review.
+- **Client:** a downloadable tablet app with a handwriting canvas, page capture, correction, and review. Evaluate a shared implementation for iPadOS and Android, with device compatibility tested before release.
 - **Recognition service:** handwriting recognition that returns text, page locations, and candidate readings where supported.
 - **AI service:** summaries and flashcards generated from the latest corrected transcription.
 - **Storage:** notes, original pages or strokes, transcription versions, summaries, and decks.
@@ -154,10 +156,11 @@ Track correction rate, summary and card edit rate, processing time, cost per pro
 
 ## Open decisions
 
-- Should the first release be tablet-first, mobile-first, or web-first?
-- Is photo import enough for the first demo, or is live handwriting essential?
+- Which tablet devices and operating-system versions should be supported in the first release?
+- Which shared app framework provides the best handwriting experience across tablet platforms?
 - Which recognition and language models work best for Chinese and English notes?
 - Should daily recaps run automatically or only when requested?
+- Which languages should be supported after Chinese and English?
 - What should work offline?
 - What business model fits the intended users?
 
