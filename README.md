@@ -20,7 +20,7 @@
 
 ---
 
-Jibiji is a planned AI-assisted tablet app for taking notes in class, based in Hangzhou, China. Whether you are learning a language or studying another subject, turn handwritten pages into readable text, useful summaries, and flashcards, even when your handwriting is messy.
+Jibiji is a planned AI-assisted note-taking app for iPad and other tablets, based in Hangzhou, China. It is designed for handwritten class notes using a stylus or touch input. Whether you are learning a language or studying another subject, turn handwritten pages into readable text, useful summaries, and flashcards, even when your handwriting is messy.
 
 > **We're planning the first prototype.** The features below describe the product we're working toward; they are not available in a released app yet.
 
@@ -34,7 +34,7 @@ Taking notes should not require perfect handwriting or a second session spent or
 
 Jibiji is for students taking notes in class, whether they are learning a language or studying any other subject. Language learners can capture vocabulary, grammar, and lesson examples; other students can capture explanations, concepts, and class exercises.
 
-The goal is a downloadable app across tablet platforms, including iPadOS and Android, rather than an app tied to one tablet brand. Exact device and operating-system support will be established during development. The initial handwriting recognition should support Chinese and English, including notes that mix both languages, with more languages planned over time.
+The goal is a downloadable app for iPad and other tablets, including Android tablets. The interface should make full use of a tablet screen and feel natural when writing with a stylus. Exact device and operating-system support will be established during development. The initial handwriting recognition should support Chinese and English, including notes that mix both languages, with more languages planned over time.
 
 ## Core experience
 
