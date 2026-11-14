@@ -1,0 +1,8 @@
+// Copy to Config/Local.xcconfig (gitignored) to sign for your own iPad.
+//
+// DEVELOPMENT_TEAM: your Apple Developer Team ID (Xcode > Settings > Accounts).
+// JIBIJI_BUNDLE_ID_PREFIX: a reverse-DNS prefix you control. A personal team
+// can't reuse a bundle ID another teammate already registered, so pick your own.
+
+DEVELOPMENT_TEAM = ABCDE12345
+JIBIJI_BUNDLE_ID_PREFIX = com.example.yourname

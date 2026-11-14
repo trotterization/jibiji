@@ -1,0 +1,10 @@
+// Shared build settings for every JIBIJI target.
+//
+// Personal signing stays out of this public repo. To run on your own iPad,
+// copy Config/Local.xcconfig.example to Config/Local.xcconfig (gitignored)
+// and set your team there instead of in Xcode's Signing & Capabilities tab.
+
+JIBIJI_BUNDLE_ID_PREFIX = com.trotterization
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"
