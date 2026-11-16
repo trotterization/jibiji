@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4A1B00000000000000000401 /* OnnxRuntimeBindings in Frameworks */ = {isa = PBXBuildFile; productRef = 4A1B00000000000000000402 /* OnnxRuntimeBindings */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		4A1B00000000000000000210 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -55,6 +59,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A1B00000000000000000401 /* OnnxRuntimeBindings in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -126,6 +131,7 @@
 			);
 			name = JIBIJI;
 			packageProductDependencies = (
+				4A1B00000000000000000402 /* OnnxRuntimeBindings */,
 			);
 			productName = JIBIJI;
 			productReference = 4A1B00000000000000000020 /* JIBIJI.app */;
@@ -210,6 +216,9 @@
 			);
 			mainGroup = 4A1B00000000000000000002;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4A1B00000000000000000403 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4A1B00000000000000000003 /* Products */;
 			projectDirPath = "";
@@ -464,6 +473,25 @@
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4A1B00000000000000000403 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/microsoft/onnxruntime-swift-package-manager";
+			requirement = {
+				kind = exactVersion;
+				version = 1.24.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4A1B00000000000000000402 /* OnnxRuntimeBindings */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4A1B00000000000000000403 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */;
+			productName = onnxruntime;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCConfigurationList section */
 		4A1B00000000000000000030 /* Build configuration list for PBXProject "JIBIJI" */ = {

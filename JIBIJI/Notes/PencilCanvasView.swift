@@ -4,8 +4,28 @@ import UIKit
 
 /// Lets SwiftUI reach the UIKit canvas.
 @MainActor
+@Observable
 final class CanvasController {
-    fileprivate weak var canvasView: PKCanvasView?
+    @ObservationIgnored fileprivate weak var canvasView: PKCanvasView?
+
+    /// The canvas's scroll offset and zoom, so SwiftUI overlays can follow the ink.
+    private(set) var contentOffset = CGPoint.zero
+    private(set) var zoomScale: CGFloat = 1
+
+    fileprivate func viewportDidChange(of canvas: UIScrollView) {
+        if contentOffset != canvas.contentOffset { contentOffset = canvas.contentOffset }
+        if zoomScale != canvas.zoomScale { zoomScale = canvas.zoomScale }
+    }
+
+    /// Converts a rectangle in page (ink) coordinates to the canvas's visible coordinates.
+    func visibleRect(forPageRect rect: CGRect) -> CGRect {
+        CGRect(
+            x: rect.minX * zoomScale - contentOffset.x,
+            y: rect.minY * zoomScale - contentOffset.y,
+            width: rect.width * zoomScale,
+            height: rect.height * zoomScale
+        )
+    }
 
     /// Gives the canvas first responder again (e.g. after a sheet closes) so the tool picker returns.
     func focus() {
@@ -27,6 +47,8 @@ struct PencilCanvasView: UIViewRepresentable {
     /// For test notebooks: start with the pen and don't save tool changes, so UI tests are
     /// repeatable and never change the palette a student has set up.
     var startsWithPenWithoutSavingTools = false
+    /// Lowest page y of suggestion chips, so they can be scrolled into view.
+    var noteBottom: CGFloat = 0
     let onDrawingChange: @MainActor (PKDrawing) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -58,24 +80,35 @@ struct PencilCanvasView: UIViewRepresentable {
         canvas.toolPicker = coordinator.toolPicker
         coordinator.toolPicker.addObserver(canvas)
 
+        coordinator.controller = controller
         controller.canvasView = canvas
         return canvas
     }
 
     func updateUIView(_ canvas: NoteCanvasView, context: Context) {
         context.coordinator.onDrawingChange = onDrawingChange
+        canvas.noteBottom = noteBottom
     }
 
     static func dismantleUIView(_ canvas: NoteCanvasView, coordinator: Coordinator) {
         coordinator.toolPicker.setVisible(false, forFirstResponder: canvas)
         coordinator.toolPicker.removeObserver(canvas)
         canvas.delegate = nil
+        // A page switch replaces the canvas; nothing from the old one may reach a page model afterwards.
+        coordinator.onDrawingChange = nil
+        coordinator.controller = nil
+        canvas.resignFirstResponder()
     }
 
     @MainActor
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         let toolPicker = PKToolPicker()
         var onDrawingChange: (@MainActor (PKDrawing) -> Void)?
+        weak var controller: CanvasController?
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            controller?.viewportDidChange(of: scrollView)
+        }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             let noteCanvas = canvasView as? NoteCanvasView
@@ -96,6 +129,12 @@ final class NoteCanvasView: PKCanvasView {
     var savedDrawing: PKDrawing?
     private(set) var isApplyingSavedDrawing = false
 
+    /// Each page's canvas has its own undo history. Without this, every canvas shares the window's
+    /// UndoManager, so Undo on one page could be offered for, or act on, another page's strokes.
+    /// History lasts while the canvas does: switching pages starts the page's canvas fresh.
+    private let pageUndoManager = UndoManager()
+    override var undoManager: UndoManager? { pageUndoManager }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         if let savedDrawing, !bounds.isEmpty {
@@ -105,6 +144,11 @@ final class NoteCanvasView: PKCanvasView {
             isApplyingSavedDrawing = false
         }
         fitContentToInk()
+    }
+
+    /// Lowest page y used by suggestion/accepted-note chips (0 when none).
+    var noteBottom: CGFloat = 0 {
+        didSet { if noteBottom != oldValue { fitContentToInk() } }
     }
 
     /// Space kept to the right of ink that runs past the right edge.
@@ -125,7 +169,8 @@ final class NoteCanvasView: PKCanvasView {
             if ink.maxX > visible.width {
                 size.width = ink.maxX + Self.trailingInkMargin
             }
-            size.height = max(visible.height, ink.maxY + Self.paletteClearance)
+            // Notes sit below their ink, so they must be scrollable above the palette too.
+            size.height = max(visible.height, max(ink.maxY, noteBottom) + Self.paletteClearance)
         }
         if contentSize != size {
             contentSize = size
@@ -136,6 +181,15 @@ final class NoteCanvasView: PKCanvasView {
         super.didMoveToWindow()
         guard window != nil else { return }
         toolPicker?.setVisible(true, forFirstResponder: self)
-        becomeFirstResponder()
+        // At launch (and right after a menu closes) the window may not be key yet, and
+        // becomeFirstResponder() then silently fails, leaving the palette without a responder.
+        // Retry once the current layout/menu transition has finished.
+        if !becomeFirstResponder() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil, !self.isFirstResponder else { return }
+                self.toolPicker?.setVisible(true, forFirstResponder: self)
+                self.becomeFirstResponder()
+            }
+        }
     }
 }

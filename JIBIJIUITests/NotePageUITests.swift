@@ -74,6 +74,55 @@ final class NotePageUITests: XCTestCase {
     }
 
     @MainActor
+    func testTwoPagesStayIndependentAndReopenAfterRelaunch() throws {
+        let app = launch(notebook: "twopages", reset: true)
+        let status = app.staticTexts["pageStatus"]
+        let title = app.staticTexts["pageTitle"]
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        XCTAssertEqual(title.label, "Page 1")
+
+        // Page 1: one stroke high on the page.
+        draw(in: app, from: CGVector(dx: 0.30, dy: 0.30), to: CGVector(dx: 0.60, dy: 0.30))
+        waitForLabel("1 stroke · Saved", on: status)
+
+        // Page 2: new, blank; two strokes lower down.
+        newPage(in: app)
+        waitForLabel("Page 2", on: title)
+        waitForLabel("Empty page", on: status)
+        assertInk(in: app, visibleAt: [], blankAt: [CGVector(dx: 0.45, dy: 0.30)])
+        XCTAssertTrue(app.buttons["Pen"].firstMatch.waitForExistence(timeout: 5))
+        draw(in: app, from: CGVector(dx: 0.30, dy: 0.50), to: CGVector(dx: 0.60, dy: 0.50))
+        draw(in: app, from: CGVector(dx: 0.30, dy: 0.60), to: CGVector(dx: 0.60, dy: 0.60))
+        waitForLabel("2 strokes · Saved", on: status)
+
+        // Undo on page 2 only removes page 2's last stroke.
+        let undo = app.buttons["Undo"].firstMatch
+        XCTAssertTrue(undo.waitForEnabled(), app.debugDescription)
+        undo.tap()
+        waitForLabel("1 stroke · Saved", on: status)
+        assertInk(in: app, visibleAt: [CGVector(dx: 0.45, dy: 0.50)], blankAt: [CGVector(dx: 0.45, dy: 0.60), CGVector(dx: 0.45, dy: 0.30)])
+
+        // Back on page 1: its ink, and an Undo history of its own (nothing to undo yet).
+        openPage("page-1", in: app)
+        waitForLabel("Page 1", on: title)
+        waitForLabel("1 stroke · Saved", on: status)
+        assertInk(in: app, visibleAt: [CGVector(dx: 0.45, dy: 0.30)], blankAt: [CGVector(dx: 0.45, dy: 0.50)])
+        XCTAssertTrue(app.buttons["Pen"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Undo"].firstMatch.isEnabled, "Page 2's undo history leaked into page 1")
+
+        app.terminate()
+        let relaunched = launch(notebook: "twopages", reset: false)
+        let reopenedStatus = relaunched.staticTexts["pageStatus"]
+        XCTAssertTrue(reopenedStatus.waitForExistence(timeout: 10))
+        waitForLabel("1 stroke · Saved", on: reopenedStatus)
+        assertInk(in: relaunched, visibleAt: [CGVector(dx: 0.45, dy: 0.30)], blankAt: [CGVector(dx: 0.45, dy: 0.50)])
+        openPage("page-2", in: relaunched)
+        waitForLabel("Page 2", on: relaunched.staticTexts["pageTitle"])
+        waitForLabel("1 stroke · Saved", on: reopenedStatus)
+        assertInk(in: relaunched, visibleAt: [CGVector(dx: 0.45, dy: 0.50)], blankAt: [CGVector(dx: 0.45, dy: 0.30), CGVector(dx: 0.45, dy: 0.60)])
+    }
+
+    @MainActor
     func testRecognitionCheckOpensAndCloses() throws {
         let app = launch(notebook: "recognition", reset: true)
         XCTAssertTrue(app.staticTexts["pageStatus"].waitForExistence(timeout: 10))
@@ -119,6 +168,22 @@ final class NotePageUITests: XCTestCase {
         XCTAssertTrue(pen.waitForExistence(timeout: 10), "The tool palette isn't showing", file: file, line: line)
         XCTAssertTrue(pen.isSelected, "A test notebook should start with the pen", file: file, line: line)
         return app
+    }
+
+    @MainActor
+    private func newPage(in app: XCUIApplication) {
+        app.buttons["pagesMenu"].tap()
+        let item = app.buttons["newPageButton"]
+        XCTAssertTrue(item.waitForExistence(timeout: 5), app.debugDescription)
+        item.tap()
+    }
+
+    @MainActor
+    private func openPage(_ pageID: String, in app: XCUIApplication) {
+        app.buttons["pagesMenu"].tap()
+        let item = app.buttons["pageItem-\(pageID)"]
+        XCTAssertTrue(item.waitForExistence(timeout: 5), app.debugDescription)
+        item.tap()
     }
 
     @MainActor

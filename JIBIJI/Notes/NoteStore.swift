@@ -52,6 +52,95 @@ struct NoteStore: Sendable {
         )
     }
 
+    // MARK: - Page order
+
+    static let pageIndexFileName = "notebook.json"
+    private struct PageIndex: Codable {
+        var version: Int
+        var pageIDs: [String]
+    }
+
+    var pageIndexURL: URL {
+        directory.appending(path: Self.pageIndexFileName, directoryHint: .notDirectory)
+    }
+
+    /// Page IDs are `page-<number>`, which also keeps them safe to use in file names.
+    static func pageNumber(of pageID: String) -> Int? {
+        guard pageID.hasPrefix("page-") else { return nil }
+        let digits = pageID.dropFirst(5)
+        guard !digits.isEmpty, digits.count < 10, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return Int(digits)
+    }
+
+    /// The pages in notebook order.
+    ///
+    /// Reads `notebook.json`. A notebook from before page order was stored (M0: just `page-1.drawing`)
+    /// has no index; its pages are discovered from the page files and nothing is rewritten, so the
+    /// existing drawing stays byte-for-byte as it was. The index is first written when a page is added.
+    ///
+    /// Throws ``NoteStoreError/unreadablePageIndex(url:reason:)`` if the index exists but isn't valid.
+    /// Callers must not replace an index they couldn't read.
+    func loadPageIDs() throws -> [String] {
+        let data: Data
+        do {
+            data = try Data(contentsOf: pageIndexURL)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return try discoverPageIDs()
+        }
+        let index: PageIndex
+        do {
+            index = try JSONDecoder().decode(PageIndex.self, from: data)
+        } catch {
+            throw NoteStoreError.unreadablePageIndex(url: pageIndexURL, reason: error.localizedDescription)
+        }
+        guard index.version == 1 else {
+            throw NoteStoreError.unreadablePageIndex(url: pageIndexURL, reason: "it was written by a newer version of JIBIJI (format \(index.version))")
+        }
+        guard !index.pageIDs.isEmpty,
+              Set(index.pageIDs).count == index.pageIDs.count,
+              index.pageIDs.allSatisfy({ Self.pageNumber(of: $0) != nil })
+        else {
+            throw NoteStoreError.unreadablePageIndex(url: pageIndexURL, reason: "its page list is empty, repeats a page, or has an invalid page name")
+        }
+        return index.pageIDs
+    }
+
+    /// Pre-index notebooks: `page-1` plus any `page-N.drawing` files, in numeric order.
+    private func discoverPageIDs() throws -> [String] {
+        var numbers: Set<Int> = [1]
+        do {
+            for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            where url.pathExtension == "drawing" {
+                if let number = Self.pageNumber(of: url.deletingPathExtension().lastPathComponent) {
+                    numbers.insert(number)
+                }
+            }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // No notes folder yet: a new notebook.
+        }
+        return numbers.sorted().map { "page-\($0)" }
+    }
+
+    /// Writes the page order atomically.
+    func savePageIDs(_ pageIDs: [String]) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(PageIndex(version: 1, pageIDs: pageIDs)).write(
+            to: pageIndexURL,
+            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        )
+    }
+
+    /// The next unused page ID: one past the highest number in use, including pages with files on disk.
+    func nextPageID(after pageIDs: [String]) -> String {
+        var highest = pageIDs.compactMap(Self.pageNumber(of:)).max() ?? 0
+        if let onDisk = try? discoverPageIDs().compactMap(Self.pageNumber(of:)).max() {
+            highest = max(highest, onDisk)
+        }
+        return "page-\(highest + 1)"
+    }
+
     /// Moves an unreadable page file aside so new ink never overwrites it, and returns where it went.
     func setAsideUnreadablePage(pageID: String, date: Date = .now) throws -> URL {
         let stamp = "\(Int(date.timeIntervalSince1970))-\(UUID().uuidString.prefix(8))"
@@ -66,9 +155,12 @@ struct NoteStore: Sendable {
 
 enum NoteStoreError: Error, LocalizedError {
     case unreadableDrawing(url: URL, underlying: any Error)
+    case unreadablePageIndex(url: URL, reason: String)
 
     var errorDescription: String? {
         switch self {
+        case .unreadablePageIndex(let url, let reason):
+            "The page list (\(url.lastPathComponent)) can't be read: \(reason). Your page files are untouched."
         case .unreadableDrawing(let url, let underlying):
             "\(url.lastPathComponent) isn't a readable drawing (\(underlying.localizedDescription))."
         }

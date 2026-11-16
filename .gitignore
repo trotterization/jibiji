@@ -13,3 +13,12 @@ DerivedData/
 
 # Personal signing settings (see Config/Local.xcconfig.example)
 Config/Local.xcconfig
+
+# Local Pinyin OCR experiment assets (see docs/prototype/M0-first-prototype.md)
+JIBIJI/Recognition/PinyinRecognition.onnx
+JIBIJI/Recognition/PinyinRecognitionDictionary.json
+JIBIJI/Recognition/PinyinMobileRecognition.onnx
+JIBIJI/Recognition/PinyinMobileRecognitionDictionary.json
+
+# Local synthetic replay ink for the opt-in Pinyin regression test
+JIBIJITests/LocalPinyinReplay.drawing
