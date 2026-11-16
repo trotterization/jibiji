@@ -11,6 +11,17 @@ struct RecognitionCheckView: View {
     @State private var query = ""
     @State private var searchResult: String?
     @State private var copied = false
+    #if DEBUG
+    @State private var visionResult: VisionStandaloneResult?
+    @State private var visionRunning = false
+    @State private var pinyinResult: PinyinOCRResult?
+    @State private var pinyinMobileResult: PinyinOCRResult?
+    @State private var pinyinRegions: [String]?
+    @State private var pinyinRunning = false
+    @State private var contextRunning = false
+    /// Bumped whenever the ink changes, so a result for older ink is dropped.
+    @State private var pinyinGeneration = 0
+    #endif
 
     var body: some View {
         NavigationStack {
@@ -35,7 +46,7 @@ struct RecognitionCheckView: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button(copied ? "Copied" : "Copy report", systemImage: "doc.on.doc") {
-                        UIPasteboard.general.string = report?.summary
+                        UIPasteboard.general.string = reportText
                         copied = true
                     }
                     .disabled(report == nil)
@@ -44,6 +55,16 @@ struct RecognitionCheckView: View {
             .task {
                 report = await RecognitionProbe.run(on: drawing)
             }
+            #if DEBUG
+            .onChange(of: drawing.dataRepresentation()) {
+                pinyinGeneration += 1
+                pinyinResult = nil
+                pinyinMobileResult = nil
+                pinyinRegions = nil
+                pinyinRunning = false
+                contextRunning = false
+            }
+            #endif
         }
     }
 
@@ -79,11 +100,154 @@ struct RecognitionCheckView: View {
                         .textSelection(.enabled)
                 }
             }
+            #if DEBUG
+            if let pinyinCheck = report.pinyinCheck {
+                Section("Pinyin handwriting check (DEBUG)") {
+                    ForEach(pinyinCheck.lines, id: \.self) { Text($0).textSelection(.enabled) }
+                }
+                .accessibilityIdentifier("pinyinCheck")
+            }
+            visionSection
+            pinyinSection
+            #endif
             if #available(iOS 27.0, *) {
                 searchSection
             }
         }
     }
+
+    /// Copyable report: the unchanged baseline summary, plus the Vision comparison once it has run.
+    private var reportText: String? {
+        guard let summary = report?.summary else { return nil }
+        #if DEBUG
+        var text = summary
+        if let visionResult {
+            text += "\nVision standalone Pinyin comparison (DEBUG, opt-in):\n"
+                + visionResult.lines.map { "  " + $0 }.joined(separator: "\n")
+        }
+        if let pinyinResult {
+            text += "\nStandalone Pinyin OCR, PP-OCRv5 ONNX (DEBUG, opt-in):\n"
+                + pinyinResult.lines.map { "  " + $0 }.joined(separator: "\n")
+        }
+        if let pinyinMobileResult {
+            text += "\nPaddleOCR mobile (ink cleanup), PP-OCRv5 mobile ONNX (DEBUG, opt-in):\n"
+                + pinyinMobileResult.lines.map { "  " + $0 }.joined(separator: "\n")
+        }
+        if let pinyinRegions {
+            text += "\nContext-aware Pinyin routing (DEBUG, opt-in; targeted Paddle only, PencilKit raw kept):\n"
+                + pinyinRegions.map { "  " + $0 }.joined(separator: "\n")
+        }
+        return text
+        #else
+        return summary
+        #endif
+    }
+
+    #if DEBUG
+    private var visionSection: some View {
+        Section {
+            Button(visionRunning ? "Running Vision…" : "Run Vision on full drawing", action: runVision)
+                .disabled(visionRunning)
+                .accessibilityIdentifier("runVisionComparison")
+            if visionRunning {
+                ProgressView()
+            }
+            if let visionResult {
+                ForEach(Array(visionResult.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).textSelection(.enabled)
+                }
+                .accessibilityIdentifier("visionResult")
+            }
+        } header: {
+            Text("Vision comparison (DEBUG, opt-in)")
+        } footer: {
+            Text("Separate from the PencilKit result above. Renders a temporary black-on-white copy of the ink; nothing is saved or changed.")
+        }
+    }
+
+    private func runVision() {
+        guard !visionRunning else { return }
+        visionRunning = true
+        let drawing = drawing
+        copied = false
+        Task {
+            let result = await RecognitionProbe.visionStandaloneCheck(on: drawing)
+            visionResult = result
+            visionRunning = false
+            copied = false
+        }
+    }
+
+    private var pinyinSection: some View {
+        Section {
+            Button(pinyinRunning ? "Running Pinyin OCR…" : "Run Pinyin OCR by line", action: runPinyin)
+                .disabled(pinyinRunning)
+                .accessibilityIdentifier("runPinyinOCR")
+            if pinyinRunning {
+                ProgressView()
+            }
+            if let pinyinResult {
+                ForEach(Array(pinyinResult.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).textSelection(.enabled)
+                }
+                .accessibilityIdentifier("pinyinOCRResult")
+            }
+            if let pinyinMobileResult {
+                Text("PaddleOCR mobile (ink cleanup)").font(.headline)
+                ForEach(Array(pinyinMobileResult.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).textSelection(.enabled)
+                }
+                .accessibilityIdentifier("pinyinMobileOCRResult")
+            }
+            Button(contextRunning ? "Running context routing…" : "Run context-aware routing (targeted Paddle only)", action: runContextRouting)
+                .disabled(contextRunning)
+                .accessibilityIdentifier("runPinyinContextRouting")
+            if let pinyinRegions {
+                Text("Context-aware routing (targeted Paddle only)").font(.headline)
+                ForEach(Array(pinyinRegions.enumerated()), id: \.offset) { _, line in
+                    Text(line).textSelection(.enabled)
+                }
+                .accessibilityIdentifier("pinyinRegionResult")
+            }
+        } header: {
+            Text("Standalone Pinyin OCR (DEBUG, opt-in)")
+        } footer: {
+            Text("Pinyin OCR by line: clearly separated horizontal lines of writing are cropped and read one at a time, top to bottom (otherwise the whole drawing is one line). Runs local PP-OCRv5 models on temporary black-on-white copies; raw output, nothing is saved or changed.")
+        }
+    }
+
+    private func runPinyin() {
+        guard !pinyinRunning else { return }
+        pinyinRunning = true
+        copied = false
+        let generation = pinyinGeneration
+        let drawing = drawing
+        Task {
+            let result = await PinyinOCR.shared.recognize(drawing)
+            let mobile = await PinyinOCR.shared.recognizeMobile(drawing)
+            guard generation == pinyinGeneration else { return }
+            pinyinResult = result
+            pinyinMobileResult = mobile
+            pinyinRunning = false
+            copied = false
+        }
+    }
+
+    private func runContextRouting() {
+        guard !contextRunning else { return }
+        contextRunning = true
+        copied = false
+        let generation = pinyinGeneration
+        let drawing = drawing
+        Task {
+            let lines = await PinyinContextRouting.run(on: drawing)
+            guard generation == pinyinGeneration else { return }
+            pinyinRegions = lines
+            contextRunning = false
+            copied = false
+        }
+    }
+    #endif
 
     @available(iOS 27.0, *)
     private var searchSection: some View {
