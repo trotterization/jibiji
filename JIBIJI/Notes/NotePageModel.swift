@@ -26,19 +26,42 @@ final class NotePageModel {
     /// A one-time message, e.g. that an unreadable page file was set aside.
     var notice: String?
 
+    /// Provisional suggestions and accepted notes for this page, kept apart from the ink.
+    let suggestions: PageSuggestionModel
+
+    /// This page's flashcards (one deck per page), kept apart from the ink.
+    let flashcards: PageFlashcards
+
     @ObservationIgnored private let store: NoteStore
     @ObservationIgnored private let autosaveDelay: Duration
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private var hasUnsavedChanges = false
 
-    init(pageID: String, store: NoteStore, autosaveDelay: Duration = .milliseconds(700)) {
+    init(
+        pageID: String,
+        store: NoteStore,
+        autosaveDelay: Duration = .milliseconds(700),
+        lineReader: (any InkLineReader)? = nil
+    ) {
         self.pageID = pageID
+        self.suggestions = PageSuggestionModel(
+            pageID: pageID,
+            store: SuggestionStore(directory: store.directory),
+            reader: lineReader ?? PencilInkLineReader(mode: .suggestions)
+        )
+        self.flashcards = PageFlashcards(
+            pageID: pageID,
+            store: store,
+            reader: lineReader ?? PencilInkLineReader(mode: .primaryOnly)
+        )
         self.store = store
         self.autosaveDelay = autosaveDelay
         let opened = Self.open(pageID: pageID, from: store)
         drawing = opened.drawing
         state = opened.state
         notice = opened.notice
+        // Seed the digest so saved cards read as current until the ink changes.
+        flashcards.inkChanged(opened.drawing)
     }
 
     var isEditable: Bool {
@@ -65,6 +88,8 @@ final class NotePageModel {
     func drawingDidChange(_ newDrawing: PKDrawing) {
         guard isEditable else { return }
         drawing = newDrawing
+        suggestions.sourceDidChange()
+        flashcards.inkChanged(newDrawing)
         hasUnsavedChanges = true
         state = .unsaved
         scheduleAutosave()
