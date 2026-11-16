@@ -1,12 +1,28 @@
 # JIBIJI — Claude Code project instructions
 
+## Current objective — stabilize the prototype
+
+**Feature scope is frozen.** The app already has a PencilKit notebook, on-demand suggestions, and flashcards with export. The current work is to make that existing behavior reliable on a physical iPad first, then polish the UI. Do not add features. Unimplemented breadth in the requirements below (iPhone study, richer review, page previews, and so on) is deferred context, not a task.
+
+**First objective: reproduce end to end on the physical iPad.**
+
+1. Write mixed ink: Hanzi, Pinyin with tone marks, and English, plus standalone marked Pinyin.
+2. On any notebook page (for example Page 4), write `好 hǎo xiang`. Request a suggestion. It should propose 像 with the English “to seem like; to look like”.
+3. Accept it, or edit it and then accept. Create the card. The new card must use the approved English.
+4. Confirm the original ink is preserved. Verify reopen after force-quit, undo, review, and export.
+
+**Evidence so far:**
+
+- Simulator: 122 passed, 1 expected failure (Chinese recognition in the Simulator), 1 skipped, no unexpected failures.
+- On the exact ink, PaddleOCR mobile read the Pinyin correctly. Simulator PencilKit missed 好.
+- A real iPad build is installed. Completion and card creation end to end are still pending.
+- Prior evidence: context-aware routing of a Hanzi + Pinyin + English line worked on the physical iPad (see `docs/prototype/M0-first-prototype.md`).
+
 ## Start here
 
-The first development task is [issue #2 — Create the first JIBIJI Xcode prototype](https://github.com/trotterization/jibiji/issues/2). Read it before editing. It authorizes a brief audit followed by creating the actual native Xcode project and a minimal PencilKit experiment. The deliverable is a draft PR the next teammate can continue.
+Read [START-HERE.md](START-HERE.md). Pick up the current repo state and take one assigned stabilization task, on one branch and one PR. Do not start a new prototype. The original prototype task, [issue #2](https://github.com/trotterization/jibiji/issues/2), is historical.
 
-On a Mac with Xcode and Claude Code installed, clone or update this repository and start Claude Code from the repo folder. Run /memory to confirm this file is loaded. Paste:
-
-> Read CLAUDE.md and https://github.com/trotterization/jibiji/issues/2. Check my Xcode setup, then create the first native iPad SwiftUI Xcode project and the scoped PencilKit prototype on a new branch. Verify what you can and publish a draft PR with test results and a handoff. Stop before merging.
+On a Mac with Xcode and Claude Code installed, clone or update this repository and start Claude Code from the repo folder. Run /memory to confirm this file is loaded.
 
 ## Session rules
 
@@ -26,7 +42,7 @@ A draft PR should link its issue and record what changed, how to build or run it
 
 One developer owns the initial Xcode project. Teammates can prepare sample notes and design references in parallel. Once interfaces are agreed, functionality and visual polish can proceed on separate issues and branches.
 
-## Product requirements
+## Product requirements (historical context; unimplemented parts are deferred)
 
 JIBIJI is a handwriting-first Mandarin class notes app. Build the native iPadOS app in Xcode with Swift, SwiftUI, and PencilKit. The target device is an iPad Air (M4) with Apple Pencil Pro. Validate writing and recognition on the physical iPad.
 
@@ -45,7 +61,7 @@ JIBIJI is a handwriting-first Mandarin class notes app. Build the native iPadOS 
 | 虎头蛇尾 with a usage note | Preserve the idiom and written usage |
 | 虽然…但是… with a sentence | Ground a grammar card in that example |
 
-## Milestones and acceptance
+## Milestones and acceptance (historical plan; the current objective above takes priority)
 
 | Milestone | Evidence before moving on |
 | --- | --- |
