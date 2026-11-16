@@ -51,6 +51,34 @@ struct CanvasTests {
         withExtendedLifetime(hosted) {}
     }
 
+    @Test func eachCanvasHasItsOwnUndoHistory() throws {
+        let one = try hostedCanvas(size: CGSize(width: 820, height: 1100), saved: PKDrawing(), log: ChangeLog())
+        let two = try hostedCanvas(size: CGSize(width: 820, height: 1100), saved: PKDrawing(), log: ChangeLog())
+
+        let oneUndo = try #require(one.canvas.undoManager)
+        let twoUndo = try #require(two.canvas.undoManager)
+        #expect(oneUndo !== twoUndo)
+        #expect(oneUndo !== one.window.undoManager)
+
+        oneUndo.registerUndo(withTarget: one.canvas) { _ in }
+        #expect(oneUndo.canUndo)
+        #expect(!twoUndo.canUndo)
+        withExtendedLifetime((one, two)) {}
+    }
+
+    @Test func dismantlingACanvasStopsItsCallbacks() async throws {
+        let log = ChangeLog()
+        let hosted = try hostedCanvas(size: CGSize(width: 820, height: 1100), saved: PKDrawing(), log: log)
+
+        PencilCanvasView.dismantleUIView(hosted.canvas, coordinator: hosted.coordinator)
+        hosted.canvas.delegate = hosted.coordinator // even if a delegate call still arrived
+        hosted.canvas.drawing = SyntheticInk.drawing(writing: "一")
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(log.drawings.isEmpty)
+        withExtendedLifetime(hosted) {}
+    }
+
     @Test func inkThatFitsDoesNotScroll() throws {
         // Includes ink right up to the right edge, which must not make the page slide sideways.
         let ink = PKDrawing(strokes: SyntheticInk.drawing(writing: "大").strokes
