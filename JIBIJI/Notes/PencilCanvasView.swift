@@ -21,8 +21,10 @@ final class CanvasController {
     }
 
     /// Makes `canvas` the one the bar drives: its tool, its policy, and its own undo history.
-    fileprivate func attach(_ canvas: NoteCanvasView) {
+    func attach(_ canvas: NoteCanvasView) {
         canvasView = canvas
+        // A new page's canvas starts at zoom 1 and offset 0, whatever the last page was left at.
+        viewportDidChange(of: canvas)
         applyTools()
         undoObservers.forEach(NotificationCenter.default.removeObserver)
         undoObservers = [
@@ -36,13 +38,15 @@ final class CanvasController {
         refreshUndoState()
     }
 
+    /// Ink comes only from Apple Pencil, so a finger is free to pan and pinch like a whiteboard.
+    /// "Draw with finger" (in the tool bar's settings) opts out. Disposable UI-test notebooks keep
+    /// finger drawing, because XCUITest has no Pencil.
+    var inkIsPencilOnly = true
+
     func applyTools() {
         guard let canvas = canvasView else { return }
         canvas.tool = tools.pkTool
-        // `.default` means Pencil-only when no system tool picker is showing, so the system
-        // "Only Draw with Apple Pencil" setting is read directly: Pencil-only on an iPad that
-        // uses a Pencil, finger drawing in the Simulator. "Draw with finger" overrides it.
-        let pencilOnly = UIPencilInteraction.prefersPencilOnlyDrawing && !tools.allowsFingerDrawing
+        let pencilOnly = (inkIsPencilOnly || UIPencilInteraction.prefersPencilOnlyDrawing) && !tools.allowsFingerDrawing
         canvas.drawingPolicy = pencilOnly ? .pencilOnly : .anyInput
     }
 
@@ -138,6 +142,7 @@ struct PencilCanvasView: UIViewRepresentable {
         canvas.isOpaque = true
         canvas.alwaysBounceVertical = false
         canvas.accessibilityIdentifier = "noteCanvas"
+        canvas.configureViewport()
 
         let coordinator = context.coordinator
         coordinator.onDrawingChange = onDrawingChange
@@ -146,6 +151,11 @@ struct PencilCanvasView: UIViewRepresentable {
         canvas.addInteraction(UIPencilInteraction(delegate: coordinator))
 
         coordinator.controller = controller
+        controller.inkIsPencilOnly = !startsWithPenWithoutSavingTools
+        #if targetEnvironment(simulator)
+        // The Simulator has no Apple Pencil: keep finger drawing there so the page can be written on.
+        controller.inkIsPencilOnly = false
+        #endif
         controller.tools.load(persisting: !startsWithPenWithoutSavingTools)
         controller.attach(canvas)
         return canvas
@@ -172,6 +182,15 @@ struct PencilCanvasView: UIViewRepresentable {
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             controller?.viewportDidChange(of: scrollView)
+        }
+
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            controller?.viewportDidChange(of: scrollView)
+        }
+
+        func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+            controller?.viewportDidChange(of: scrollView)
+            (scrollView as? NoteCanvasView)?.fitContentToInk(ignoringZoomState: true)
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
@@ -264,22 +283,41 @@ final class NoteCanvasView: PKCanvasView {
     /// Makes the scrollable area cover all of the ink, so strokes written in a larger window
     /// (e.g. portrait before rotating to landscape) stay reachable, including ink that would
     /// otherwise sit under the tool palette. A page whose ink is already in view doesn't scroll.
-    func fitContentToInk() {
+    func fitContentToInk(ignoringZoomState: Bool = false) {
         guard !bounds.isEmpty else { return }
-        let visible = bounds.inset(by: adjustedContentInset).size
-        var size = visible
+        // The page at zoom 1 is as big as the visible area. Ink and notes are in page units; the scroll
+        // view's contentSize is in screen units (page units times the zoom). The tool-bar clearance is a
+        // fixed distance on screen, so it is added after scaling.
+        let zoom = max(zoomScale, 0.01)
+        let page = bounds.inset(by: adjustedContentInset).size
+        var pageWidth = page.width
+        var height = page.height * zoom
         if !drawing.strokes.isEmpty {
             let ink = drawing.bounds
-            if ink.maxX > visible.width {
-                size.width = ink.maxX + Self.trailingInkMargin
+            if ink.maxX > page.width {
+                pageWidth = ink.maxX + Self.trailingInkMargin
             }
             // Notes sit below their ink, so they must be scrollable above the palette too.
-            size.height = max(visible.height, max(ink.maxY, noteBottom) + Self.paletteClearance)
+            height = max(height, max(ink.maxY, noteBottom) * zoom + Self.paletteClearance)
         }
-        if contentSize != size {
+        let size = CGSize(width: pageWidth * zoom, height: height)
+        if contentSize != size, ignoringZoomState || (!isZooming && !isZoomBouncing) {
             contentSize = size
         }
     }
+
+    /// Pinch to zoom and a finger to pan are PencilKit's own scroll-view gestures; with Pencil-only
+    /// ink they never compete with drawing.
+    func configureViewport() {
+        minimumZoomScale = Self.zoomRange.lowerBound
+        maximumZoomScale = Self.zoomRange.upperBound
+        bouncesZoom = true
+        panGestureRecognizer.minimumNumberOfTouches = 1
+        pinchGestureRecognizer?.isEnabled = true
+    }
+
+    /// How far the page can be zoomed. 1 is the page at its natural size.
+    static let zoomRange: ClosedRange<CGFloat> = 0.5...4
 
     override func didMoveToWindow() {
         super.didMoveToWindow()

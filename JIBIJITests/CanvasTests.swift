@@ -121,6 +121,150 @@ struct CanvasTests {
         #expect(hosted.canvas.contentSize.height >= farInk.bounds.maxY)
         withExtendedLifetime(hosted) {}
     }
+
+    // MARK: - Whiteboard zoom and pan
+
+    private func zoomable(_ log: ChangeLog = ChangeLog(), saved: PKDrawing = SyntheticInk.drawing(writing: "大人十", origin: CGPoint(x: 100, y: 200)))
+        throws -> (canvas: NoteCanvasView, coordinator: PencilCanvasView.Coordinator, controller: CanvasController, window: UIWindow) {
+        let hosted = try hostedCanvas(size: CGSize(width: 820, height: 1100), saved: saved, log: log)
+        hosted.canvas.configureViewport()
+        let controller = CanvasController()
+        controller.canvasView = hosted.canvas
+        hosted.coordinator.controller = controller
+        return (hosted.canvas, hosted.coordinator, controller, hosted.window)
+    }
+
+    @Test func pinchRangeIsConfiguredAndClamped() throws {
+        let z = try zoomable()
+        #expect(z.canvas.minimumZoomScale == 0.5 && z.canvas.maximumZoomScale == 4)
+        z.canvas.setZoomScale(10, animated: false)
+        #expect(z.canvas.zoomScale <= 4)
+        z.canvas.setZoomScale(0.1, animated: false)
+        #expect(z.canvas.zoomScale >= 0.5)
+        withExtendedLifetime(z) {}
+    }
+
+    @Test func fingerPansAndPinchesWhileInkIsPencilOnly() throws {
+        let z = try zoomable()
+        z.controller.inkIsPencilOnly = true
+        z.controller.applyTools()
+        #expect(z.canvas.drawingPolicy == .pencilOnly)
+        #expect(z.canvas.panGestureRecognizer.minimumNumberOfTouches == 1)
+        #expect(z.canvas.pinchGestureRecognizer?.isEnabled == true)
+        // The opt-in "draw with finger" and disposable test notebooks keep finger ink.
+        z.controller.tools.allowsFingerDrawing = true
+        z.controller.applyTools()
+        #expect(z.canvas.drawingPolicy == .anyInput)
+        z.controller.tools.allowsFingerDrawing = false
+        z.controller.inkIsPencilOnly = false
+        z.controller.applyTools()
+        #expect(z.canvas.drawingPolicy == .anyInput)
+        withExtendedLifetime(z) {}
+    }
+
+    @Test func zoomingAndPanningNeverChangeInkOrCountAsEdits() async throws {
+        let log = ChangeLog()
+        let saved = SyntheticInk.drawing(writing: "大人十", origin: CGPoint(x: 100, y: 200))
+        let z = try zoomable(log, saved: saved)
+        try await Task.sleep(for: .milliseconds(100))
+        log.drawings.removeAll()
+        z.canvas.setZoomScale(2.5, animated: false)
+        z.canvas.contentOffset = CGPoint(x: 120, y: 90)
+        z.coordinator.scrollViewDidZoom(z.canvas)
+        z.coordinator.scrollViewDidEndZooming(z.canvas, with: nil, atScale: 2.5)
+        z.canvas.setZoomScale(1, animated: false)
+        z.coordinator.scrollViewDidEndZooming(z.canvas, with: nil, atScale: 1)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(z.canvas.drawing == saved)
+        #expect(log.drawings.isEmpty)
+        // Ink coordinates are page coordinates whatever the zoom: the saved data is identical.
+        z.canvas.setZoomScale(3, animated: false)
+        #expect(z.canvas.drawing.dataRepresentation() == saved.dataRepresentation())
+        withExtendedLifetime(z) {}
+    }
+
+    @Test func overlaysFollowZoomAndPan() throws {
+        let z = try zoomable()
+        z.canvas.setZoomScale(2, animated: false)
+        z.canvas.contentOffset = CGPoint(x: 30, y: 50)
+        z.coordinator.scrollViewDidZoom(z.canvas)
+        let page = CGRect(x: 100, y: 200, width: 60, height: 40)
+        let visible = z.controller.visibleRect(forPageRect: page)
+        #expect(visible == CGRect(x: 100 * 2 - z.canvas.contentOffset.x, y: 200 * 2 - z.canvas.contentOffset.y, width: 120, height: 80))
+        #expect(z.controller.zoomScale == 2)
+        withExtendedLifetime(z) {}
+    }
+
+    @Test func scrollableAreaScalesWithZoomSoAllInkStaysReachable() throws {
+        let tall = SyntheticInk.drawing(writing: "大人十", origin: CGPoint(x: 100, y: 1500))
+        let z = try zoomable(saved: tall)
+        z.canvas.fitContentToInk()
+        let natural = z.canvas.contentSize
+        z.canvas.setZoomScale(2, animated: false)
+        z.canvas.fitContentToInk()
+        // The page doubles in size on screen. The tool-bar clearance is a fixed 128 screen points, so it
+        // doesn't double: height = 2 x lowest ink + 128.
+        #expect(abs(z.canvas.contentSize.height - (tall.bounds.maxY * 2 + NoteCanvasView.paletteClearance)) < 1)
+        #expect(z.canvas.contentSize.height > natural.height)
+        withExtendedLifetime(z) {}
+    }
+
+    @Test(arguments: [2.0, 4.0, 0.5])
+    func shortPageStaysScrollableAtEveryZoom(zoom: Double) throws {
+        let z = try zoomable(saved: SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 100, y: 200)))
+        z.canvas.setZoomScale(CGFloat(zoom), animated: false)
+        // A sentinel size, so only the fit can produce the expected one.
+        z.canvas.contentSize = CGSize(width: 1, height: 1)
+        z.coordinator.scrollViewDidEndZooming(z.canvas, with: nil, atScale: CGFloat(zoom))
+        let page = z.canvas.bounds.inset(by: z.canvas.adjustedContentInset).size
+        // The whole zoomed page can be reached by panning, not just the part that fits the screen.
+        #expect(abs(z.canvas.contentSize.width - page.width * CGFloat(zoom)) < 1)
+        // PencilKit itself keeps contentSize at least the canvas size times the zoom, so height lies between.
+        #expect(z.canvas.contentSize.height >= page.height * CGFloat(zoom) - 1)
+        #expect(z.canvas.contentSize.height <= z.canvas.bounds.height * CGFloat(zoom) + 1)
+        if zoom > 1 {
+            #expect(z.canvas.contentSize.width > page.width && z.canvas.contentSize.height > page.height)
+            z.canvas.contentOffset = CGPoint(x: z.canvas.contentSize.width - page.width, y: z.canvas.contentSize.height - page.height)
+            #expect(z.canvas.contentOffset.x > 0 && z.canvas.contentOffset.y > 0)
+        }
+        withExtendedLifetime(z) {}
+    }
+
+    @Test func switchingPagesResetsTheControllersViewport() throws {
+        let one = try zoomable()
+        one.canvas.setZoomScale(2, animated: false)
+        one.canvas.contentOffset = CGPoint(x: 60, y: 80)
+        one.coordinator.scrollViewDidZoom(one.canvas)
+        #expect(one.controller.zoomScale == 2)
+        let next = try hostedCanvas(size: CGSize(width: 820, height: 1100), saved: PKDrawing(), log: ChangeLog())
+        one.controller.attach(next.canvas)
+        #expect(one.controller.zoomScale == 1)
+        #expect(one.controller.contentOffset == next.canvas.contentOffset)
+        withExtendedLifetime((one, next)) {}
+    }
+
+    @Test func undoAndEraseStillWorkWhileZoomedAndSaveRoundTrips() throws {
+        let original = SyntheticInk.drawing(writing: "大人十", origin: CGPoint(x: 100, y: 200))
+        let z = try zoomable(saved: original)
+        z.canvas.setZoomScale(2, animated: false)
+        z.canvas.contentOffset = CGPoint(x: 40, y: 40)
+        // An erase (as one native undoable edit) while zoomed.
+        let erased = PKDrawing(strokes: Array(original.strokes.dropLast()))
+        z.controller.applyDrawing(erased, actionName: "Erase")
+        #expect(z.canvas.drawing.strokes.count == original.strokes.count - 1)
+        z.controller.undo()
+        #expect(z.canvas.drawing == original)
+        z.controller.redo()
+        #expect(z.canvas.drawing.strokes.count == original.strokes.count - 1)
+        #expect(z.canvas.zoomScale == 2)
+        // The saved page is the same ink at any zoom.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("zoom-save-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = NoteStore(directory: folder)
+        try store.save(z.canvas.drawing, pageID: "page-1")
+        #expect(try store.loadDrawing(pageID: "page-1") == z.canvas.drawing)
+        withExtendedLifetime(z) {}
+    }
 }
 
 @Suite("Native replacement undo", .serialized)
