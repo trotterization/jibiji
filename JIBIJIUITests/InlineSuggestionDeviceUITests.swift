@@ -107,6 +107,9 @@ final class InlineSuggestionDeviceUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-JIBIJIStoreName", notebook]
         app.launch()
+        let open = app.buttons["openNotebook"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10), "The notebook cover didn't appear")
+        open.tap()
         XCTAssertTrue(app.staticTexts["pageStatus"].waitForExistence(timeout: 15), "The notebook didn't open")
         if clearNotes { removeAcceptedNotes(in: app) }
         return app

@@ -4,6 +4,7 @@ import SwiftUI
 /// The local notebook: pick a page from the Pages menu, add pages, write with Apple Pencil.
 struct NotePageView: View {
     @Bindable var notebook: NotebookModel
+    var showCover: (() -> Void)? = nil
     @State private var canvas = CanvasController()
     @State private var showsRecognitionCheck = false
     @State private var showsCards = false
@@ -90,7 +91,11 @@ struct NotePageView: View {
     // Undo, redo, and the eraser live in the system tool palette, as in other iPadOS writing apps.
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
+        ToolbarItemGroup(placement: .topBarLeading) {
+            if let showCover {
+                Button("Cover", systemImage: "house", action: showCover)
+                    .accessibilityIdentifier("showCover")
+            }
             Menu("Pages", systemImage: "book.pages") {
                 ForEach(notebook.pageIDs, id: \.self) { id in
                     Button {
