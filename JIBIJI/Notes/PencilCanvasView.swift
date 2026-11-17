@@ -6,7 +6,7 @@ import UIKit
 @MainActor
 @Observable
 final class CanvasController {
-    @ObservationIgnored fileprivate weak var canvasView: PKCanvasView?
+    @ObservationIgnored weak var canvasView: PKCanvasView?
 
     /// The canvas's scroll offset and zoom, so SwiftUI overlays can follow the ink.
     private(set) var contentOffset = CGPoint.zero
@@ -25,6 +25,19 @@ final class CanvasController {
             width: rect.width * zoomScale,
             height: rect.height * zoomScale
         )
+    }
+
+    /// Install a model edit as one native undo operation. Native undo/redo notifies
+    /// the model, while the initial model-authored change is already accounted for.
+    func applyDrawing(_ drawing: PKDrawing, actionName: String = "Replace handwriting", notify: Bool = false) {
+        guard let canvas = canvasView as? NoteCanvasView else { return }
+        let old = canvas.drawing
+        canvas.undoManager?.registerUndo(withTarget: self) { controller in
+            controller.applyDrawing(old, actionName: actionName, notify: true)
+        }
+        canvas.undoManager?.setActionName(actionName)
+        canvas.setModelDrawing(drawing)
+        if notify { canvas.delegate?.canvasViewDrawingDidChange?(canvas) }
     }
 
     /// Gives the canvas first responder again (e.g. after a sheet closes) so the tool picker returns.
@@ -49,6 +62,9 @@ struct PencilCanvasView: UIViewRepresentable {
     var startsWithPenWithoutSavingTools = false
     /// Lowest page y of suggestion chips, so they can be scrolled into view.
     var noteBottom: CGFloat = 0
+    /// How far the floating bar reaches down over the canvas. The page starts below it, and
+    /// scrolls up under it.
+    var topInset: CGFloat = 0
     let onDrawingChange: @MainActor (PKDrawing) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -88,6 +104,7 @@ struct PencilCanvasView: UIViewRepresentable {
     func updateUIView(_ canvas: NoteCanvasView, context: Context) {
         context.coordinator.onDrawingChange = onDrawingChange
         canvas.noteBottom = noteBottom
+        canvas.topInset = topInset
     }
 
     static func dismantleUIView(_ canvas: NoteCanvasView, coordinator: Coordinator) {
@@ -129,6 +146,13 @@ final class NoteCanvasView: PKCanvasView {
     var savedDrawing: PKDrawing?
     private(set) var isApplyingSavedDrawing = false
 
+    func setModelDrawing(_ next: PKDrawing) {
+        isApplyingSavedDrawing = true
+        drawing = next
+        isApplyingSavedDrawing = false
+        fitContentToInk()
+    }
+
     /// Each page's canvas has its own undo history. Without this, every canvas shares the window's
     /// UndoManager, so Undo on one page could be offered for, or act on, another page's strokes.
     /// History lasts while the canvas does: switching pages starts the page's canvas fresh.
@@ -142,6 +166,30 @@ final class NoteCanvasView: PKCanvasView {
             isApplyingSavedDrawing = true
             drawing = savedDrawing
             isApplyingSavedDrawing = false
+        }
+        fitContentToInk()
+    }
+
+    /// The total top inset wanted, counted from the canvas's top edge (see ``PencilCanvasView/topInset``).
+    var topInset: CGFloat = 0 {
+        didSet { if topInset != oldValue { applyTopInset() } }
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        applyTopInset()
+    }
+
+    /// UIKit already adds the safe area (the status bar) on top of `contentInset`, so only the
+    /// rest is set here. A page that was scrolled to the top stays at the top.
+    private func applyTopInset() {
+        let wasAtTop = contentOffset.y <= -adjustedContentInset.top + 0.5
+        let inset = max(0, topInset - safeAreaInsets.top)
+        guard contentInset.top != inset else { return }
+        contentInset.top = inset
+        verticalScrollIndicatorInsets.top = inset
+        if wasAtTop {
+            contentOffset.y = -adjustedContentInset.top
         }
         fitContentToInk()
     }

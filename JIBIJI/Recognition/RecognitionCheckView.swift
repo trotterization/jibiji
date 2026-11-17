@@ -83,6 +83,9 @@ struct RecognitionCheckView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.surface)
+            .tint(.primary)
             .navigationTitle("Recognition check")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

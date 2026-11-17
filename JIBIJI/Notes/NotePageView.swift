@@ -8,6 +8,8 @@ struct NotePageView: View {
     @State private var canvas = CanvasController()
     @State private var showsRecognitionCheck = false
     @State private var showsCards = false
+    /// The bar's bottom edge in the window. The page scrolls under the bar, starting below it.
+    @State private var barBottom: CGFloat = 0
 
     var body: some View {
         content
@@ -69,19 +71,20 @@ struct NotePageView: View {
                 initialDrawing: page.drawing,
                 controller: canvas,
                 startsWithPenWithoutSavingTools: page.usesTestNotebook,
-                noteBottom: page.suggestions.noteBottom ?? 0
+                noteBottom: page.suggestions.noteBottom ?? 0,
+                topInset: barBottom
             ) { drawing in
                 // Bound to this page's model, so a late callback can only reach its own page.
                 page.drawingDidChange(drawing)
             }
             // Same frame as the canvas, so suggestions can follow its scroll offset.
-            .overlay { SuggestionOverlay(suggestions: page.suggestions, drawing: page.drawing, canvas: canvas) }
+            .overlay { SuggestionOverlay(page: page, canvas: canvas, topInset: barBottom) }
             .rises(distance: 0)
             // A separate canvas (and tool picker) per page.
             .id(page.pageID)
             // Scoped to this page's identity; accepted notes are kept.
             .onDisappear { page.suggestions.cancelPending() }
-            .ignoresSafeArea(.container, edges: .bottom)
+            .ignoresSafeArea(.container, edges: [.top, .bottom])
             // The page never types text. If a software keyboard appears (Simulator without a
             // hardware keyboard), it must not resize the canvas, which re-lays out and rescrolls the ink.
             .ignoresSafeArea(.keyboard)
@@ -97,7 +100,7 @@ struct NotePageView: View {
                     Text("jibiji")
                         .font(.system(size: 19, weight: .semibold, design: .rounded))
                         .tracking(-0.6)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 6)
                         .frame(height: 38)
                         .contentShape(Rectangle())
@@ -106,7 +109,7 @@ struct NotePageView: View {
                 .accessibilityLabel("Cover")
                 .accessibilityIdentifier("showCover")
                 Rectangle()
-                    .fill(.white.opacity(0.16))
+                    .fill(Color.primary.opacity(0.14))
                     .frame(width: 1, height: 18)
                     .padding(.horizontal, 8)
             }
@@ -138,21 +141,15 @@ struct NotePageView: View {
             HStack(spacing: 10) {
                 Text(currentTitle)
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .contentTransition(.numericText())
                     .accessibilityIdentifier("pageTitle")
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 6, height: 6)
-                        .accessibilityHidden(true)
-                    Text(currentPage?.statusText ?? "")
-                        .font(.system(size: 13))
-                        .monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.58))
-                        .contentTransition(.numericText())
-                        .accessibilityIdentifier("pageStatus")
-                }
+                Text(currentPage?.statusText ?? "")
+                    .font(.system(size: 13))
+                    .monospacedDigit()
+                    .foregroundStyle(statusIsProblem ? AnyShapeStyle(Theme.problem) : AnyShapeStyle(.secondary))
+                    .contentTransition(.numericText())
+                    .accessibilityIdentifier("pageStatus")
             }
             .lineLimit(1)
             .padding(.leading, 6)
@@ -161,7 +158,24 @@ struct NotePageView: View {
 
             Spacer(minLength: 8)
 
-            if let suggestions = currentPage?.suggestions, suggestions.canUndo {
+            if let page = currentPage, let note = page.latestVisibleReplacement {
+                // The most recent replacement that is still intact on the page.
+                Button("Restore handwriting", systemImage: "arrow.uturn.backward") {
+                    if page.restoreOriginal(note.id) { canvas.applyDrawing(page.drawing, actionName: "Restore handwriting") }
+                }
+                .buttonStyle(BarIconButtonStyle())
+                .accessibilityIdentifier("undoSuggestion")
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+                Button("Delete replacement", systemImage: "trash") {
+                    page.deleteReplacement(note.id)
+                    canvas.applyDrawing(page.drawing, actionName: "Delete replacement")
+                }
+                .buttonStyle(BarIconButtonStyle())
+                .accessibilityIdentifier("deleteReplacement")
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+            } else if let suggestions = currentPage?.suggestions, suggestions.canUndo,
+                      suggestions.annotations.last?.replacement == nil {
+                // Older text notes, saved before replacements existed.
                 Button("Undo suggestion", systemImage: "arrow.uturn.backward") {
                     suggestions.undoLastAccept()
                 }
@@ -199,22 +213,23 @@ struct NotePageView: View {
         .padding(.leading, 10)
         .padding(.trailing, 8)
         .frame(height: 54)
-        .background(Theme.bar, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).strokeBorder(.white.opacity(0.06)))
-        .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
+        // Frosted: the page and its ink scroll underneath.
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).strokeBorder(Theme.hairline))
+        .shadow(color: .black.opacity(0.07), radius: 16, y: 6)
         .padding(.horizontal, 12)
         .padding(.top, 4)
         .padding(.bottom, 8)
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { barBottom = $0 }
         .animation(Theme.Motion.list, value: currentPage?.suggestions.canUndo)
+        .animation(Theme.Motion.list, value: currentPage?.latestVisibleReplacement?.id)
         .rises(after: 0.05, distance: -10)
     }
 
-    private var statusColor: Color {
+    private var statusIsProblem: Bool {
         switch currentPage?.state {
-        case .saved: Theme.saved
-        case .unsaved: Theme.pending
-        case .failed, .cannotOpen: Theme.problem
-        default: .white.opacity(0.28)
+        case .failed, .cannotOpen: true
+        default: false
         }
     }
 
@@ -246,10 +261,10 @@ private struct SuggestLabel: View {
             }
         }
         .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(Color(white: 0.1))
+        .foregroundStyle(Theme.onInk)
         .padding(.horizontal, 16)
         .frame(height: 36)
-        .background(.white.opacity(isEnabled ? 1 : 0.3), in: RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous))
+        .background(Color.primary.opacity(isEnabled ? 1 : 0.3), in: RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous))
         .animation(Theme.Motion.quick, value: isReading)
     }
 }

@@ -35,13 +35,14 @@ private struct RootView: View {
                 // Opacity only: the canvas and its tool palette need their final frame from the start.
                 .transition(.opacity)
             } else {
-                NotebookCoverView {
+                NotebookCoverView(isStill: notebook.usesTestNotebook) {
                     withAnimation(Theme.Motion.screen) { notebookIsOpen = true }
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                // The cover runs its own dive into the page; this only fades what is left.
+                .transition(.opacity)
             }
         }
-        // The cover's black shows through while the two screens cross over.
-        .background(Color.black.ignoresSafeArea())
+        // Same surface as both screens, so nothing flashes while they cross over.
+        .background(Theme.surface.ignoresSafeArea())
     }
 }

@@ -25,6 +25,9 @@ final class NotebookModel {
     @ObservationIgnored private let autosaveDelay: Duration
     @ObservationIgnored private var models: [String: NotePageModel] = [:]
 
+    /// A disposable Debug-only notebook for UI tests.
+    var usesTestNotebook: Bool { store.isTestNotebook }
+
     init(store: NoteStore, autosaveDelay: Duration = .milliseconds(700)) {
         self.store = store
         self.autosaveDelay = autosaveDelay

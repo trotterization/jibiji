@@ -134,11 +134,14 @@ final class NotePageUITests: XCTestCase {
         app.buttons["Check recognition"].tap()
         let available = app.descendants(matching: .any)["recognizerAvailable"]
         let unavailable = app.descendants(matching: .any)["recognizerUnavailable"]
+        // The Form loads rows lazily; once the image-recognition section appears, the status row
+        // can sit below the fold. The recognized-text row at the top also means the check finished.
+        let recognized = app.descendants(matching: .any)["recognizedText"]
         let deadline = Date.now.addingTimeInterval(30)
-        while !available.exists, !unavailable.exists, Date.now < deadline {
-            _ = available.waitForExistence(timeout: 1)
+        while !available.exists, !unavailable.exists, !recognized.exists, Date.now < deadline {
+            _ = recognized.waitForExistence(timeout: 1)
         }
-        XCTAssertTrue(available.exists || unavailable.exists, "The recognition check never finished")
+        XCTAssertTrue(available.exists || unavailable.exists || recognized.exists, "The recognition check never finished")
         // The tool palette hides under the sheet, so it can't change ink the student can't see.
         XCTAssertFalse(paletteUndo.exists && paletteUndo.isHittable, "The tool palette is still usable above the sheet")
         attachScreenshot(of: app, named: "Recognition check")

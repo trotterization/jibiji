@@ -183,13 +183,22 @@ final class PageFlashcards {
     @discardableResult
     func merge(lines: [RecognizedLine], digest: String, corrections: [AcceptedAnnotation] = [],
                vocabulary: StarterVocabulary = .standard) -> Int {
+        // A replacement is already confirmed text. Don't ask a stroke recognizer
+        // to reinterpret the glyph-fill paths and override what the student approved.
+        let replacements = corrections.filter { $0.replacement != nil }
+        let lines = lines.filter { line in
+            !replacements.contains { note in
+                let overlap = note.anchor.intersection(line.bounds)
+                return !overlap.isNull && overlap.width * overlap.height >= line.bounds.width * line.bounds.height * 0.5
+            }
+        } + replacements.map { RecognizedLine(text: $0.text, bounds: $0.anchor) }
         var added = 0
         var claimedLines = Set<Int>()
         var activeNotes = Set<UUID>()
         var usedCards = Set<UUID>()
         for note in corrections {
             // Exact source text only; if several lines match, the one overlapping the note's anchor most.
-            let match = lines.indices.filter { lines[$0].rawText == note.recognizedText && note.anchor.intersects(lines[$0].bounds) }
+            let match = lines.indices.filter { (note.replacement != nil ? lines[$0].text == note.text : lines[$0].rawText == note.recognizedText) && note.anchor.intersects(lines[$0].bounds) }
                 .max { Self.overlap(note.anchor, lines[$0].bounds) < Self.overlap(note.anchor, lines[$1].bounds) }
             guard let li = match, let r = Self.resolve(note, line: lines[li], vocabulary: vocabulary) else { continue }
             claimedLines.insert(li)

@@ -8,8 +8,6 @@ enum Theme {
     static let surface = Color(uiColor: .jibijiSurface)
     /// Raised panels: cards, rows, sheets' content blocks.
     static let panel = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.115, alpha: 1) : .white })
-    /// The floating notebook bar. Dark in both appearances.
-    static let bar = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.15, alpha: 1) : UIColor(white: 0.115, alpha: 1) })
     /// One-pixel separators and panel outlines.
     static let hairline = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 1, alpha: 0.11) : UIColor(white: 0, alpha: 0.09) })
     /// Text and fills that sit on top of `Color.primary`.
@@ -141,10 +139,10 @@ struct BarIconButtonStyle: ButtonStyle {
         configuration.label
             .labelStyle(.iconOnly)
             .font(.system(size: 16, weight: .medium))
-            .foregroundStyle(.white.opacity(isEnabled ? 0.92 : 0.3))
+            .foregroundStyle(Color.primary.opacity(isEnabled ? 0.85 : 0.3))
             .frame(width: 38, height: 38)
             .background(
-                .white.opacity(configuration.isPressed ? 0.16 : 0),
+                Color.primary.opacity(configuration.isPressed ? 0.08 : 0),
                 in: RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous)
             )
             .contentShape(Rectangle())
