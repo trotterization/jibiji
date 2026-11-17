@@ -56,6 +56,13 @@ struct RecognitionFallbackTests {
         print("Production OCR replay: \(lines.map { $0.readings }) in \(clock.now - start)")
         #expect(!lines.isEmpty)
         #expect(lines.contains { !StarterVocabulary.hanzi(in: $0.text).isEmpty })
+        for indices in VisionInkReader.regions(in: drawing) {
+            let crop = PKDrawing(strokes: indices.map { drawing.strokes[$0] })
+            let mobile = await PinyinOCR.shared.recognizeMobile(crop)
+            let server = await PinyinOCR.shared.recognize(crop)
+            print("Beam: \(await PinyinOCR.shared.readings(crop))")
+            print("Region \(crop.bounds): mobile=\(mobile.text ?? "missing"), server=\(server.text ?? "missing")")
+        }
         let cachedStart = clock.now
         #expect(try await reader.lines(in: drawing) == lines)
         print("Cached replay: \(clock.now - cachedStart)")
@@ -99,6 +106,30 @@ struct PinyinOCRTests {
 
         #expect(text == "nǐ hǎo")
         #expect(text.unicodeScalars.count == "nǐ hǎo".precomposedStringWithCanonicalMapping.unicodeScalars.count)
+    }
+
+    @Test func beamDecoderMatchesExhaustiveCTCPaths() {
+        let rows: [[Float]] = [[0.35, 0.4, 0.25], [0.5, 0.2, 0.3], [0.2, 0.45, 0.35]]
+        var probabilities: [String: Double] = [:]
+        for a in 0..<3 { for b in 0..<3 { for c in 0..<3 {
+            let path = [a, b, c]
+            var previous = 0
+            var text = ""
+            for symbol in path {
+                if symbol != 0 && symbol != previous { text += symbol == 1 ? "牛" : "我" }
+                previous = symbol
+            }
+            probabilities[text, default: 0] += Double(rows[0][a]) * Double(rows[1][b]) * Double(rows[2][c])
+        } } }
+        let expected = probabilities.filter { !$0.key.isEmpty }.sorted { $0.value > $1.value }.map(\.key)
+        let decoded = PinyinCTC.alternatives(logits: rows.flatMap { $0 }, steps: 3, classes: 3, dictionary: ["牛", "我"], width: 50)
+        #expect(decoded == expected)
+    }
+
+    @Test func beamKeepsAccentsAndBlankSeparatedRepeats() {
+        let repeated = Self.logits(for: [1, 0, 1])
+        #expect(PinyinCTC.alternatives(logits: repeated, steps: 3, classes: Self.dictionary.count + 2, dictionary: Self.dictionary).first == "nn")
+        #expect(PinyinCTC.alternatives(logits: [], steps: 0, classes: 0, dictionary: []).isEmpty)
     }
 
     @Test func blankSeparatesRepeatedClasses() {

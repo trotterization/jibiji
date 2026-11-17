@@ -88,11 +88,13 @@ actor VisionInkReader {
         #if DEBUG
         // The optional mobile model is local only. Add its reading as a second opinion;
         // never silently replace the student's ink or pretend a reading is certain.
-        let paddle = await PinyinOCR.shared.recognizeMobile(drawing)
-        if let reading = paddle.text?.trimmingCharacters(in: .whitespacesAndNewlines), !reading.isEmpty {
+        let readings = await PinyinOCR.shared.readings(drawing)
+        if let reading = readings.first {
             if lines.count == 1 {
                 var merged = lines[0]
-                if !merged.readings.contains(reading) { merged.readings.append(reading) }
+                for alternative in readings where !merged.readings.contains(alternative) {
+                    merged.readings.append(alternative)
+                }
                 if StarterVocabulary.hanzi(in: merged.text).isEmpty && !StarterVocabulary.hanzi(in: reading).isEmpty {
                     merged.readings.removeAll { $0 == reading }
                     merged.readings.insert(reading, at: 0)
@@ -100,7 +102,7 @@ actor VisionInkReader {
                 }
                 return [merged]
             } else if lines.isEmpty {
-                return [RecognizedLine(text: reading, bounds: drawing.bounds, readings: [reading])]
+                return [RecognizedLine(text: reading, bounds: drawing.bounds, readings: readings)]
             }
         }
         #endif
