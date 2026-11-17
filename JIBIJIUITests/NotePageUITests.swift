@@ -132,16 +132,8 @@ final class NotePageUITests: XCTestCase {
         XCTAssertTrue(paletteUndo.waitForExistence(timeout: 5))
 
         app.buttons["Check recognition"].tap()
-        let available = app.descendants(matching: .any)["recognizerAvailable"]
-        let unavailable = app.descendants(matching: .any)["recognizerUnavailable"]
-        // The Form loads rows lazily; once the image-recognition section appears, the status row
-        // can sit below the fold. The recognized-text row at the top also means the check finished.
-        let recognized = app.descendants(matching: .any)["recognizedText"]
-        let deadline = Date.now.addingTimeInterval(30)
-        while !available.exists, !unavailable.exists, !recognized.exists, Date.now < deadline {
-            _ = recognized.waitForExistence(timeout: 1)
-        }
-        XCTAssertTrue(available.exists || unavailable.exists || recognized.exists, "The recognition check never finished")
+        // Copy report is enabled only when the report arrives, independent of Form scroll position.
+        XCTAssertTrue(app.buttons["Copy report"].waitForEnabled(timeout: 30), "The recognition check never finished")
         // The tool bar hides under the sheet, so it can't change ink the student can't see.
         XCTAssertFalse(paletteUndo.exists && paletteUndo.isHittable, "The tool bar is still usable above the sheet")
         attachScreenshot(of: app, named: "Recognition check")

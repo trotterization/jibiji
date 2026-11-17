@@ -85,7 +85,7 @@ enum ReadingCrossCheck {
     private static func folded(_ word: String) -> String { StarterVocabulary.latinTokens(word).joined() }
     private static func hasToneMarks(_ word: String) -> Bool { word.precomposedStringWithCanonicalMapping.lowercased() != folded(word) && word.contains { $0.isLetter && String($0).folding(options: .diacriticInsensitive, locale: nil) != String($0) } }
 
-    static func resolve(primary: String, alternatives: [String]) -> Outcome {
+    static func resolve(primary: String, alternatives: [String], vocabulary: StarterVocabulary = .standard) -> Outcome {
         let unchanged = Outcome(text: primary, status: .agreed, note: nil)
         let runs = StarterVocabulary.hanziRuns(in: primary)
         let others = alternatives.filter { $0 != primary && !$0.isEmpty }
@@ -101,7 +101,11 @@ enum ReadingCrossCheck {
         }.map { alternative in pieces(alternative).filter(\.isWord).map { Word($0.text).core } }
         guard !comparable.isEmpty else { return unchanged }
 
-        let hint = romanization(of: runs.joined())
+        let term = runs.joined()
+        let pronunciation = vocabulary.entries.first { $0.hanzi == term }?.pinyin
+            ?? term.applyingTransform(.mandarinToLatin, reverse: false) ?? ""
+        let reference = Array(pronunciation.precomposedStringWithCanonicalMapping.lowercased().filter(\.isLetter))
+        let hint = folded(pronunciation)
         var corrected = false
         var unresolvedNotes: [String] = []
         var confirmed = ""   // folded Pinyin accepted so far, to check each word still fits the Hanzi
@@ -139,7 +143,14 @@ enum ReadingCrossCheck {
                 offset == position || !isLatinCore(other.core) || isPinyin(other.core)
             }
             let pinyinSlotDisagreement = !primaryValid && proposals.contains { isPinyin($0) } && (hint.isEmpty ? othersArePinyin : slotOpen)
-            if !primaryValid, !tonesConflict, fittingLetters.count == 1, let best = fitting.sorted(by: { (hasToneMarks($0) ? 0 : 1, $0) < (hasToneMarks($1) ? 0 : 1, $1) }).first {
+            // An invalid spelling may be corrected, but an explicitly conflicting tone is still unresolved.
+            let toneCompatible = fitting.filter { candidate in
+                let end = confirmed.count + folded(candidate).count
+                guard end <= reference.count else { return false }
+                let expected = String(reference[confirmed.count..<end])
+                return RecognitionCrossCheck.pinyinAgrees(candidate, with: expected)
+            }
+            if !primaryValid, !tonesConflict, fittingLetters.count == 1, let best = toneCompatible.sorted(by: { (hasToneMarks($0) ? 0 : 1, $0) < (hasToneMarks($1) ? 0 : 1, $1) }).first {
                 // A toned reading with the same letters is preferred (nóng over nong).
                 parts[index].text = Word(parts[index].text).lead + best + Word(parts[index].text).trail
                 confirmed += folded(best)

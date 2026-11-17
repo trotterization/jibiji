@@ -23,6 +23,9 @@ struct SuggestionProposal: Equatable, Sendable {
     /// actually written, since handwriting recognition alone can't tell a misspelling from a misread.
     var pinyinState: PinyinState = .notWritten
     var pinyinAlreadyWritten: Bool { pinyinState != .notWritten }
+    /// Exact written fields, retained when replacing the whole source line.
+    var writtenPinyin: String? = nil
+    var writtenGloss: String? = nil
 }
 
 enum PinyinState: Equatable, Sendable {
@@ -163,6 +166,7 @@ struct StarterVocabulary: Sendable {
                 misspelled = true
             }
             guard pinyinRange != nil || hanziWritten else { continue }
+            if hanziWritten && runs != [entry.hanzi] { continue }
 
             // Partial Hanzi (e.g. 好 for 好像) only counts with the entry's exact pinyin, and any other
             // Han run is a contradiction: abstain rather than guess.
@@ -193,16 +197,46 @@ struct StarterVocabulary: Sendable {
                 glossComplete = glossTokens.contains(rest)
             }
             if hanziWritten && glossComplete && state == .correct { return nil } // nothing left to add
+            let written = Self.writtenFields(in: text, pinyinRange: pinyinRange)
             let alternatives = entry.alternatives.compactMap { hanzi in entries.first { $0.hanzi == hanzi }?.candidate }
             return SuggestionProposal(
                 candidates: [entry.candidate] + alternatives,
                 hanziAlreadyWritten: hanziWritten,
                 glossAlreadyWritten: glossComplete,
                 hanziPrefixWritten: prefix,
-                pinyinState: state
+                pinyinState: state,
+                writtenPinyin: written.pinyin,
+                writtenGloss: written.gloss
             )
         }
         return nil
+    }
+
+    /// Use the original token ranges so tone marks, spelling and English punctuation survive review.
+    private static func writtenFields(in text: String, pinyinRange: Range<Int>?) -> (pinyin: String?, gloss: String?) {
+        let expression = try! NSRegularExpression(pattern: "[\\p{Latin}\\p{M}]+")
+        let spans = expression.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            .compactMap { Range($0.range, in: text) }
+        guard let first = spans.first else { return (nil, nil) }
+        let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "·"))
+        guard let pinyinRange, pinyinRange.upperBound <= spans.count else {
+            let hanzi = Self.hanziRuns(in: text).first
+            let start = hanzi.flatMap { text.range(of: $0) }.map(\.upperBound) ?? first.lowerBound
+            return (nil, String(text[start..<text.endIndex]).trimmingCharacters(in: separators))
+        }
+        let pinyin = String(text[spans[pinyinRange.lowerBound].lowerBound..<spans[pinyinRange.upperBound - 1].upperBound])
+        // Matching accepts English either before or after Pinyin. Preserve both when present.
+        var gloss: [String] = []
+        if pinyinRange.lowerBound > 0 {
+            gloss.append(String(text[first.lowerBound..<spans[pinyinRange.lowerBound].lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if pinyinRange.upperBound < spans.count {
+            var suffix = String(text[spans[pinyinRange.upperBound - 1].upperBound..<text.endIndex]).trimmingCharacters(in: separators)
+            let prefix = text[..<spans[pinyinRange.lowerBound].lowerBound].trimmingCharacters(in: .whitespaces)
+            if prefix.hasSuffix("("), suffix.hasPrefix(")") { suffix = String(suffix.dropFirst()).trimmingCharacters(in: separators) }
+            gloss.append(suffix)
+        }
+        return (pinyin, gloss.isEmpty ? nil : gloss.joined(separator: " "))
     }
 
     /// Same letters, so compare tone marks letter by letter: a written mark that conflicts is wrong;

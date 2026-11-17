@@ -10,6 +10,29 @@ actor VisionInkReader {
     private var cachedInk: Data?
     private var cachedLines: [RecognizedLine] = []
 
+    private var lineCache: [String: [String]] = [:]
+
+    /// A second opinion on the exact stroke group used by the native recognizer.
+    func lineReadings(in drawing: PKDrawing) async throws -> [String] {
+        let key = PageFlashcards.digest(of: drawing)
+        if let cached = lineCache[key] { return cached }
+        let lines = try await readCrop(drawing).sorted { $0.bounds.minX < $1.bounds.minX }
+        let primary = lines.map(\.text).joined(separator: " ")
+        var readings = primary.isEmpty ? [] : [primary]
+        for index in lines.indices {
+            for alternative in lines[index].readings {
+                var parts = lines.map(\.text)
+                parts[index] = alternative
+                let text = parts.joined(separator: " ")
+                if !readings.contains(text) { readings.append(text) }
+            }
+        }
+        try Task.checkCancellation()
+        if lineCache.count >= 32 { lineCache.removeAll() }
+        lineCache[key] = readings
+        return readings
+    }
+
     func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
         try Task.checkCancellation()
         let ink = drawing.dataRepresentation()
@@ -22,9 +45,10 @@ actor VisionInkReader {
             let crop = PKDrawing(strokes: indices.map { drawing.strokes[$0] })
             output += try await readCrop(crop)
         }
+        let checked = RecognitionCrossCheck.resolve(output)
         cachedInk = ink
-        cachedLines = output
-        return output
+        cachedLines = checked
+        return checked
     }
 
     /// Connected strokes form local writing units. Large blank spaces must not cause
@@ -95,17 +119,12 @@ actor VisionInkReader {
                 for alternative in readings where !merged.readings.contains(alternative) {
                     merged.readings.append(alternative)
                 }
-                if StarterVocabulary.hanzi(in: merged.text).isEmpty && !StarterVocabulary.hanzi(in: reading).isEmpty {
-                    merged.readings.removeAll { $0 == reading }
-                    merged.readings.insert(reading, at: 0)
-                    merged.text = reading
-                }
-                return [merged.crossChecked()]
+                return [merged]
             } else if lines.isEmpty {
                 return [RecognizedLine(text: reading, bounds: drawing.bounds, readings: readings)]
             }
         }
         #endif
-        return lines.map { $0.crossChecked() }
+        return lines
     }
 }

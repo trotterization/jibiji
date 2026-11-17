@@ -23,8 +23,8 @@ struct RecognizedLine: Sendable, Equatable {
 
     /// Compares this line's readings (``alternatives`` and ``readings``) before anything is drafted or edited.
     /// The ink itself is never touched. `rawText` stays what the primary recognizer read.
-    func crossChecked() -> RecognizedLine {
-        let outcome = ReadingCrossCheck.resolve(primary: text, alternatives: alternatives + readings)
+    func crossChecked(vocabulary: StarterVocabulary = .standard) -> RecognizedLine {
+        let outcome = ReadingCrossCheck.resolve(primary: text, alternatives: alternatives + readings, vocabulary: vocabulary)
         guard outcome.status != .agreed else { return self }
         var line = self
         if outcome.status == .corrected {
@@ -63,7 +63,20 @@ struct PencilInkLineReader: InkLineReader {
     func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
         guard !drawing.strokes.isEmpty else { return [] }
         if UserDefaults.standard.bool(forKey: "JibijiUsePaddlePipeline") {
-            return try await PaddleTextPipeline.shared.lines(in: drawing)
+            let detected = try await PaddleTextPipeline.shared.lines(in: drawing)
+            var result: [RecognizedLine] = []
+            for var line in detected {
+                try Task.checkCancellation()
+                let indices = InkSelection.indices(in: drawing, bounds: line.bounds)
+                if !indices.isEmpty {
+                    let crop = PKDrawing(strokes: indices.map { drawing.strokes[$0] })
+                    let readings = (try? await VisionInkReader.shared.lineReadings(in: crop)) ?? []
+                    for text in readings where !line.readings.contains(text) { line.readings.append(text) }
+                }
+                result.append(line)
+            }
+            try Task.checkCancellation()
+            return RecognitionCrossCheck.resolve(result)
         }
         // The simulator exposes English-only stroke recognition. Read rendered ink in
         // Chinese instead of interpreting Hanzi as English letters. Also works on older OSes.
@@ -83,16 +96,11 @@ struct PencilInkLineReader: InkLineReader {
             if let raw = text, !raw.isEmpty {
                 var text = raw
                 if mode == .suggestions { text = await HanziPrefixFallback.resolve(primary: raw, strokes: strokes) }
-                var line = RecognizedLine(text: text, bounds: bounds, sourceText: text == raw ? nil : raw)
-                #if DEBUG
-                // Hanzi with a Latin word that isn't Pinyin: ask the local Paddle model for a second reading.
-                if ReadingCrossCheck.wantsSecondOpinion(text),
-                   let second = await PinyinOCR.shared.recognizeMobile(PKDrawing(strokes: strokes)).text?
-                       .trimmingCharacters(in: .whitespacesAndNewlines), !second.isEmpty, second != text {
-                    line.alternatives = [second]
-                }
-                #endif
-                result.append(line.crossChecked()) }
+                let readings = (try? await VisionInkReader.shared.lineReadings(in: PKDrawing(strokes: strokes))) ?? []
+                try Task.checkCancellation()
+                result.append(RecognizedLine(text: text, bounds: bounds, sourceText: text == raw ? nil : raw,
+                                             readings: readings)) }
+
         }
         return result
     }
@@ -116,16 +124,14 @@ struct PendingSuggestion: Identifiable, Equatable {
 
     var candidate: SuggestionCandidate { proposal.candidates[selectedIndex] }
 
-    /// What the line becomes when replaced: the Hanzi, then the pinyin and English only if the
-    /// student wrote some (so a line of just pinyin isn't padded with a gloss nobody wrote).
-    var cleanText: String {
-        if candidate.pinyin.isEmpty && candidate.gloss.isEmpty { return candidate.hanzi }
-        let written = StarterVocabulary.latinTokens(recognizedText).joined()
-        let pinyin = StarterVocabulary.latinTokens(candidate.pinyin).joined()
-        var parts = [candidate.hanzi]
-        if !written.isEmpty { parts.append(candidate.pinyin) }
-        if written.count > pinyin.count { parts.append(candidate.gloss) }
-        return parts.joined(separator: " ")
+    /// Includes missing supported fields and preserves the student's written Pinyin and English.
+    var cleanText: String { replacementText }
+
+    var replacementText: String {
+        guard !candidate.pinyin.isEmpty || !candidate.gloss.isEmpty else { return candidate.hanzi }
+        let pinyin = selectedIndex == 0 ? proposal.writtenPinyin ?? candidate.pinyin : candidate.pinyin
+        let gloss = selectedIndex == 0 ? proposal.writtenGloss ?? candidate.gloss : candidate.gloss
+        return [candidate.hanzi, pinyin, gloss].filter { !$0.isEmpty }.joined(separator: " · ")
     }
     var hasAlternatives: Bool { proposal.candidates.count > 1 }
 
@@ -214,7 +220,7 @@ struct AcceptedAnnotation: Codable, Identifiable, Equatable {
                 if result.hanzi != nil { result.ambiguous = true }
                 result.hanzi = part
             } else if let target, !target.isEmpty, StarterVocabulary.latinTokens(inner).joined() == target {
-                result.pinyin = knownPinyin
+                result.pinyin = knownPinyin.map { RecognitionCrossCheck.pinyinAgrees(inner, with: $0) ? $0 : inner }
             } else if !StarterVocabulary.hanzi(in: part).isEmpty {
                 result.ambiguous = true
             } else {
@@ -341,15 +347,22 @@ final class PageSuggestionModel {
         case .failure(let error):
             // Recognition trouble never blocks writing or touches strokes.
             status = .message(error is InkLineReaderError ? error.localizedDescription : "Suggestions aren't available right now. Keep writing.")
-        case .success(let lines):
+        case .success(let recognized):
+            let lines = RecognitionCrossCheck.resolve(recognized, vocabulary: vocabulary)
             var unmatched: [String] = []
             pending = lines.compactMap { line in
                 let proposal: SuggestionProposal
+                var seen = Set<String>()
+                let readings = ([line.text] + line.readings + line.alternatives).filter { !$0.isEmpty && seen.insert($0).inserted }
+                let differentHanzi = Set(readings.map { StarterVocabulary.hanzi(in: $0) }).count > 1
+                let isolatedCharacter = line.text.count == 1 && !StarterVocabulary.hanzi(in: line.text).isEmpty
                 if let known = vocabulary.proposal(forRecognizedText: line.text) {
                     proposal = known
-                } else if !line.readings.isEmpty {
+                } else if !line.inkEditSuppressed, !line.readings.isEmpty,
+                          readings.contains(where: { !StarterVocabulary.hanzi(in: $0).isEmpty }),
+                          differentHanzi || isolatedCharacter {
                     proposal = SuggestionProposal(
-                        candidates: line.readings.map { SuggestionCandidate(hanzi: $0, pinyin: "", gloss: "") },
+                        candidates: readings.map { SuggestionCandidate(hanzi: $0, pinyin: "", gloss: "") },
                         hanziAlreadyWritten: false, glossAlreadyWritten: true)
                 } else {
                     // Hanzi the starter vocabulary has never heard of: say so rather than guess or stay silent.
@@ -433,7 +446,7 @@ final class PageSuggestionModel {
         let parts = Self.replacementParts(text, for: item)
         let note = AcceptedAnnotation(id: UUID(), text: text, edited: text != item.cleanText && text != item.candidate.hanzi,
                                       anchor: bounds,
-                                      recognizedText: item.recognizedText,
+                                      recognizedText: item.sourceText ?? item.recognizedText,
                                       hanzi: parts.hanzi, pinyin: parts.pinyin, gloss: parts.gloss,
                                       replacement: recovery)
         do {
@@ -470,6 +483,12 @@ final class PageSuggestionModel {
     /// the dictionary gloss is used only when the text is the unedited suggestion without English.
     static func replacementParts(_ text: String, for item: PendingSuggestion) -> (hanzi: String?, pinyin: String?, gloss: String?) {
         let unedited = text == item.cleanText || text == item.candidate.hanzi
+        if text.contains("·") {
+            let parsed = AcceptedAnnotation.parse(text, knownPinyin: item.candidate.pinyin)
+            guard !parsed.ambiguous else { return (nil, nil, nil) }
+            let gloss = parsed.glossParts.isEmpty ? nil : parsed.glossParts.joined(separator: " · ")
+            return (parsed.hanzi, parsed.pinyin, gloss)
+        }
         let hanzi = StarterVocabulary.hanzi(in: text)
         var rest = String(text.unicodeScalars.filter { !(0x4E00...0x9FFF).contains($0.value) }.map(Character.init))
             .trimmingCharacters(in: .whitespacesAndNewlines)
