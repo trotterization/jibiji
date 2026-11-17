@@ -8,6 +8,62 @@ import UIKit
 final class CanvasController {
     @ObservationIgnored weak var canvasView: PKCanvasView?
 
+    /// The pen case the bar edits. Shared by every page's canvas.
+    let tools = InkTools()
+    private(set) var canUndo = false
+    private(set) var canRedo = false
+    /// False while something covers the page (e.g. a sheet); the tool bar hides then.
+    private(set) var isFocused = true
+    @ObservationIgnored private var undoObservers: [NSObjectProtocol] = []
+
+    init() {
+        tools.onChange = { [weak self] in self?.applyTools() }
+    }
+
+    /// Makes `canvas` the one the bar drives: its tool, its policy, and its own undo history.
+    fileprivate func attach(_ canvas: NoteCanvasView) {
+        canvasView = canvas
+        applyTools()
+        undoObservers.forEach(NotificationCenter.default.removeObserver)
+        undoObservers = [
+            .NSUndoManagerCheckpoint, .NSUndoManagerDidCloseUndoGroup,
+            .NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange,
+        ].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: canvas.undoManager, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshUndoState() }
+            }
+        }
+        refreshUndoState()
+    }
+
+    func applyTools() {
+        guard let canvas = canvasView else { return }
+        canvas.tool = tools.pkTool
+        // `.default` means Pencil-only when no system tool picker is showing, so the system
+        // "Only Draw with Apple Pencil" setting is read directly: Pencil-only on an iPad that
+        // uses a Pencil, finger drawing in the Simulator. "Draw with finger" overrides it.
+        let pencilOnly = UIPencilInteraction.prefersPencilOnlyDrawing && !tools.allowsFingerDrawing
+        canvas.drawingPolicy = pencilOnly ? .pencilOnly : .anyInput
+    }
+
+    func undo() {
+        canvasView?.undoManager?.undo()
+        refreshUndoState()
+    }
+
+    func redo() {
+        canvasView?.undoManager?.redo()
+        refreshUndoState()
+    }
+
+    func refreshUndoState() {
+        let manager = canvasView?.undoManager
+        let undo = manager?.canUndo ?? false
+        let redo = manager?.canRedo ?? false
+        if canUndo != undo { canUndo = undo }
+        if canRedo != redo { canRedo = redo }
+    }
+
     /// The canvas's scroll offset and zoom, so SwiftUI overlays can follow the ink.
     private(set) var contentOffset = CGPoint.zero
     private(set) var zoomScale: CGFloat = 1
@@ -38,21 +94,25 @@ final class CanvasController {
         canvas.undoManager?.setActionName(actionName)
         canvas.setModelDrawing(drawing)
         if notify { canvas.delegate?.canvasViewDrawingDidChange?(canvas) }
+        refreshUndoState()
     }
 
-    /// Gives the canvas first responder again (e.g. after a sheet closes) so the tool picker returns.
+    /// Brings the tool bar back (e.g. after a sheet closes).
     func focus() {
+        isFocused = true
         canvasView?.becomeFirstResponder()
     }
 
-    /// Hides the tool picker while something covers the page (e.g. a sheet), so its undo or
+    /// Hides the tool bar while something covers the page (e.g. a sheet), so its undo or
     /// eraser can't change ink the student can't see.
     func resignFocus() {
+        isFocused = false
+        tools.quickPalette = nil
         canvasView?.resignFirstResponder()
     }
 }
 
-/// A PencilKit page with the system tool picker (pens, eraser, lasso, ruler, undo, redo).
+/// A PencilKit page. Its tools come from ``InkTools`` and the jibiji tool bar, not the system picker.
 struct PencilCanvasView: UIViewRepresentable {
     /// Used only when the canvas is created; later edits flow out through `onDrawingChange`.
     let initialDrawing: PKDrawing
@@ -74,9 +134,6 @@ struct PencilCanvasView: UIViewRepresentable {
     func makeUIView(context: Context) -> NoteCanvasView {
         let canvas = NoteCanvasView()
         canvas.savedDrawing = initialDrawing
-        // `.default` follows the system "Only Draw with Apple Pencil" setting:
-        // Pencil-only on an iPad paired with a Pencil, finger drawing in the Simulator.
-        canvas.drawingPolicy = .default
         canvas.backgroundColor = .jibijiPaper
         canvas.isOpaque = true
         canvas.alwaysBounceVertical = false
@@ -84,20 +141,13 @@ struct PencilCanvasView: UIViewRepresentable {
 
         let coordinator = context.coordinator
         coordinator.onDrawingChange = onDrawingChange
-        if startsWithPenWithoutSavingTools {
-            coordinator.toolPicker.stateAutosaveName = nil
-            if let pen = coordinator.toolPicker.toolItems.first(where: {
-                ($0 as? PKToolPickerInkingItem)?.inkingTool.inkType == .pen
-            }) {
-                coordinator.toolPicker.selectedToolItem = pen
-            }
-        }
         canvas.delegate = coordinator
-        canvas.toolPicker = coordinator.toolPicker
-        coordinator.toolPicker.addObserver(canvas)
+        // Double-tap and squeeze, as set in Settings › Apple Pencil.
+        canvas.addInteraction(UIPencilInteraction(delegate: coordinator))
 
         coordinator.controller = controller
-        controller.canvasView = canvas
+        controller.tools.load(persisting: !startsWithPenWithoutSavingTools)
+        controller.attach(canvas)
         return canvas
     }
 
@@ -108,8 +158,6 @@ struct PencilCanvasView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ canvas: NoteCanvasView, coordinator: Coordinator) {
-        coordinator.toolPicker.setVisible(false, forFirstResponder: canvas)
-        coordinator.toolPicker.removeObserver(canvas)
         canvas.delegate = nil
         // A page switch replaces the canvas; nothing from the old one may reach a page model afterwards.
         coordinator.onDrawingChange = nil
@@ -118,8 +166,7 @@ struct PencilCanvasView: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, PKCanvasViewDelegate {
-        let toolPicker = PKToolPicker()
+    final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var onDrawingChange: (@MainActor (PKDrawing) -> Void)?
         weak var controller: CanvasController?
 
@@ -132,15 +179,24 @@ struct PencilCanvasView: UIViewRepresentable {
             noteCanvas?.fitContentToInk()
             // Opening the saved page isn't an edit.
             if noteCanvas?.isApplyingSavedDrawing == true { return }
+            controller?.tools.quickPalette = nil
             onDrawingChange?(canvasView.drawing)
+            controller?.refreshUndoState()
+        }
+
+        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+            controller?.tools.pencilTap(at: tap.hoverPose?.location)
+        }
+
+        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+            guard squeeze.phase == .ended else { return }
+            controller?.tools.pencilSqueeze(at: squeeze.hoverPose?.location)
         }
     }
 }
 
 /// Opens the saved page once the canvas has a size, and shows the tool picker in a window.
 final class NoteCanvasView: PKCanvasView {
-    weak var toolPicker: PKToolPicker?
-
     /// The page to show when the canvas is first laid out. PencilKit doesn't render a drawing
     /// assigned while the canvas is still zero-sized (as it is in `makeUIView`), so it waits until then.
     var savedDrawing: PKDrawing?
@@ -201,7 +257,7 @@ final class NoteCanvasView: PKCanvasView {
 
     /// Space kept to the right of ink that runs past the right edge.
     static let trailingInkMargin: CGFloat = 32
-    /// The default tool palette floats over about the last 120 pt of the page, so the lowest ink
+    /// The tool bar floats over about the last 90 pt of the page, so the lowest ink
     /// must be able to scroll at least this far above the bottom edge to be seen.
     static let paletteClearance: CGFloat = 128
 
@@ -228,14 +284,12 @@ final class NoteCanvasView: PKCanvasView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         guard window != nil else { return }
-        toolPicker?.setVisible(true, forFirstResponder: self)
-        // At launch (and right after a menu closes) the window may not be key yet, and
-        // becomeFirstResponder() then silently fails, leaving the palette without a responder.
-        // Retry once the current layout/menu transition has finished.
+        // First responder, so hardware-keyboard Undo/Redo reach this page's history. At launch
+        // (and right after a menu closes) the window may not be key yet, and
+        // becomeFirstResponder() then silently fails; retry once the transition has finished.
         if !becomeFirstResponder() {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.window != nil, !self.isFirstResponder else { return }
-                self.toolPicker?.setVisible(true, forFirstResponder: self)
                 self.becomeFirstResponder()
             }
         }

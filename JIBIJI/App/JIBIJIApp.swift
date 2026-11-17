@@ -32,7 +32,7 @@ private struct RootView: View {
                     notebook.saveAll()
                     withAnimation(Theme.Motion.screen) { notebookIsOpen = false }
                 })
-                // Opacity only: the canvas and its tool palette need their final frame from the start.
+                // Opacity only: the canvas and its tool bar need their final frame from the start.
                 .transition(.opacity)
             } else {
                 NotebookCoverView(isStill: notebook.usesTestNotebook) {

@@ -15,6 +15,8 @@ struct NotePageView: View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.surface.ignoresSafeArea())
+            .overlay(alignment: .bottom) { toolBar }
+            .animation(Theme.Motion.list, value: canvas.isFocused)
             .safeAreaInset(edge: .top, spacing: 0) { bar }
             .tint(.primary)
         .alert("Page kept safe", isPresented: showsNotice) {
@@ -79,6 +81,7 @@ struct NotePageView: View {
             }
             // Same frame as the canvas, so suggestions can follow its scroll offset.
             .overlay { SuggestionOverlay(page: page, canvas: canvas, topInset: barBottom) }
+            .overlay { quickPalette }
             .rises(distance: 0)
             // A separate canvas (and tool picker) per page.
             .id(page.pageID)
@@ -91,7 +94,38 @@ struct NotePageView: View {
         }
     }
 
-    // Undo, redo, and the eraser live in the system tool palette, as in other iPadOS writing apps.
+    /// The jibiji pen case under the page. Hidden while a sheet covers the page.
+    @ViewBuilder
+    private var toolBar: some View {
+        if canvas.isFocused, currentPage?.isEditable ?? false {
+            InkToolBar(controller: canvas)
+                .padding(.bottom, 10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .rises(after: 0.1, distance: 16)
+        }
+    }
+
+    /// The tools again, beside Apple Pencil, when it asks for them (squeeze, or a double-tap set
+    /// to show the palette). Writing or picking a tool closes it.
+    private var quickPalette: some View {
+        GeometryReader { proxy in
+            if let point = canvas.tools.quickPalette {
+                let size = proxy.size
+                let anchor = point == .zero ? CGPoint(x: size.width / 2, y: size.height - 170) : point
+                InkToolBar(controller: canvas, style: .quick)
+                    .fixedSize()
+                    .position(
+                        x: min(max(anchor.x, 180), size.width - 180),
+                        y: min(max(anchor.y - 80, barBottom + 50), size.height - 120)
+                    )
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+            }
+        }
+        // Empty space never takes the Pencil away from the page.
+        .allowsHitTesting(canvas.tools.quickPalette != nil)
+        .animation(Theme.Motion.quick, value: canvas.tools.quickPalette)
+    }
+
     /// The floating bar above the page: where you are on the left, what you can do on the right.
     private var bar: some View {
         HStack(spacing: 4) {

@@ -168,7 +168,7 @@ struct NotebookCoverView: View {
         guard openedAt == nil else { return }
         openedAt = .now
         opening = true
-        // Building the notebook (PencilKit's canvas and tool picker) briefly blocks the main
+        // Building the notebook (the PencilKit canvas and its page) briefly blocks the main
         // thread, so it starts only once the tile has gone, not halfway through the dive.
         Task {
             try? await Task.sleep(for: .milliseconds(still ? 0 : 420))
