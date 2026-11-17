@@ -197,11 +197,12 @@ struct NotebookLibrary: Codable, Equatable {
 
     struct PageInfo: Codable, Equatable {
         var name: String?
+        var summary: String? = nil
         var tag: PageTag?
         var pinned = false
         var folder: String?
 
-        var isEmpty: Bool { name == nil && tag == nil && !pinned && folder == nil }
+        var isEmpty: Bool { name == nil && summary == nil && tag == nil && !pinned && folder == nil }
     }
 }
 
