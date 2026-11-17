@@ -269,7 +269,7 @@ final class PageFlashcards {
             }
             cards.append(PageFlashcard(
                 id: UUID(), front: draft.front, back: draft.back, kind: draft.kind,
-                sourceText: draft.sourceText, needsReview: draft.needsReview,
+                sourceText: draft.sourceText, needsReview: draft.needsReview || line.needsReview,
                 sourceBounds: line.bounds, inkDigest: digest, status: .draft, edited: false,
                 dedupeKey: key
             ))

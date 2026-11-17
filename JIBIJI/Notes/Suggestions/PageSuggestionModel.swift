@@ -13,6 +13,30 @@ struct RecognizedLine: Sendable, Equatable {
     /// Image-recognition readings for user confirmation, not dictionary meanings.
     var readings: [String] = []
     var rawText: String { sourceText ?? text }
+    /// Other readings of the same ink (another engine), used only to cross-check the primary reading.
+    var alternatives: [String] = []
+    /// Set by ``crossChecked()``: the readings disagreed and nothing settled it.
+    var needsReview = false
+    var reviewNote: String? = nil
+    /// The text was corrected from another reading, or is unresolved: no ink edit is offered for this line.
+    var inkEditSuppressed = false
+
+    /// Compares this line's readings (``alternatives`` and ``readings``) before anything is drafted or edited.
+    /// The ink itself is never touched. `rawText` stays what the primary recognizer read.
+    func crossChecked() -> RecognizedLine {
+        let outcome = ReadingCrossCheck.resolve(primary: text, alternatives: alternatives + readings)
+        guard outcome.status != .agreed else { return self }
+        var line = self
+        if outcome.status == .corrected {
+            line.sourceText = sourceText ?? text
+            line.text = outcome.text
+        } else {
+            line.needsReview = true
+        }
+        line.reviewNote = outcome.note
+        line.inkEditSuppressed = true
+        return line
+    }
 }
 
 /// Reads the text of each written line. Injected so tests don't need PencilKit recognition.
@@ -59,7 +83,16 @@ struct PencilInkLineReader: InkLineReader {
             if let raw = text, !raw.isEmpty {
                 var text = raw
                 if mode == .suggestions { text = await HanziPrefixFallback.resolve(primary: raw, strokes: strokes) }
-                result.append(RecognizedLine(text: text, bounds: bounds, sourceText: text == raw ? nil : raw)) }
+                var line = RecognizedLine(text: text, bounds: bounds, sourceText: text == raw ? nil : raw)
+                #if DEBUG
+                // Hanzi with a Latin word that isn't Pinyin: ask the local Paddle model for a second reading.
+                if ReadingCrossCheck.wantsSecondOpinion(text),
+                   let second = await PinyinOCR.shared.recognizeMobile(PKDrawing(strokes: strokes)).text?
+                       .trimmingCharacters(in: .whitespacesAndNewlines), !second.isEmpty, second != text {
+                    line.alternatives = [second]
+                }
+                #endif
+                result.append(line.crossChecked()) }
         }
         return result
     }
@@ -331,15 +364,17 @@ final class PageSuggestionModel {
                 }
                 if alreadyAccepted { return nil }
                 // Two recognizers read the Latin part differently: it may be a misread, not the student's slip.
-                var readingNote: String?
-                if let source = line.sourceText,
+                var readingNote = line.reviewNote
+                var suppressInk = line.inkEditSuppressed
+                if readingNote == nil, let source = line.sourceText,
                    StarterVocabulary.latinTokenPairs(source).map(\.raw) != StarterVocabulary.latinTokenPairs(line.text).map(\.raw) {
                     readingNote = "Two readings of this ink disagree on the Pinyin, so it is uncertain. Check it. Your ink is unchanged."
+                    suppressInk = true
                 }
                 return PendingSuggestion(revision: revision, anchor: line.bounds, recognizedText: line.text,
                                          sourceText: line.sourceText, proposal: proposal,
                                          sourceStrokeIDs: Set(InkSelection.indices(in: drawing, bounds: line.bounds).map { InkSelection.identity(drawing.strokes[$0]) }),
-                                         readingNote: readingNote, inkEditSuppressed: readingNote != nil)
+                                         readingNote: readingNote, inkEditSuppressed: suppressInk)
             }
             // Only when nothing else was offered, so it never sits beside working suggestions looking like a failure.
             if pending.isEmpty, !unmatched.isEmpty {

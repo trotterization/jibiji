@@ -312,4 +312,27 @@ final class PageFlashcardTests: XCTestCase {
         await task.value
         XCTAssertTrue(model.cards.isEmpty)
     }
+
+    // MARK: Issue #12: cross-checked readings
+
+    func testDraftUsesCorrectedPinyinNotNone() {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: FakeReader(result: []))
+        model.inkChanged(PKDrawing())
+        let line = RecognizedLine(text: "农夫 none fu farmer", bounds: .zero, alternatives: ["农夫 nong fu farmer"]).crossChecked()
+        model.merge(lines: [line], digest: model.currentDigest!)
+        let card = model.cards.first
+        XCTAssertEqual(card?.front, "农夫")
+        XCTAssertFalse(card?.back.contains("none") ?? true)
+        XCTAssertTrue(card?.back.contains("nong fu") ?? false)
+    }
+
+    func testUnresolvedReadingMarksTheDraftForReview() {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: FakeReader(result: []))
+        model.inkChanged(PKDrawing())
+        let line = RecognizedLine(text: "农夫 none fu farmer", bounds: .zero, alternatives: ["农夫 nang fu farmer"]).crossChecked()
+        XCTAssertTrue(line.needsReview)
+        model.merge(lines: [line], digest: model.currentDigest!)
+        XCTAssertEqual(model.cards.count, 1)
+        XCTAssertTrue(model.cards[0].needsReview)
+    }
 }
