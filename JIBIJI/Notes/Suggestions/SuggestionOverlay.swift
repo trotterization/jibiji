@@ -112,7 +112,7 @@ private struct PendingChip: View {
     var body: some View {
         HStack(spacing: 2) {
             Button(action: accept) {
-                Text(item.annotationText)
+                Text(item.candidate.pinyin.isEmpty && item.candidate.gloss.isEmpty ? "Possible: \(item.annotationText)" : item.annotationText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.leading, 10)
@@ -130,9 +130,9 @@ private struct PendingChip: View {
                                 select(index)
                             } label: {
                                 if index == item.selectedIndex {
-                                    Label("\(candidate.hanzi) \(candidate.pinyin) · \(candidate.gloss)", systemImage: "checkmark")
+                                    Label(candidate.pinyin.isEmpty && candidate.gloss.isEmpty ? candidate.hanzi : "\(candidate.hanzi) \(candidate.pinyin) · \(candidate.gloss)", systemImage: "checkmark")
                                 } else {
-                                    Text("\(candidate.hanzi) \(candidate.pinyin) · \(candidate.gloss)")
+                                    Text(candidate.pinyin.isEmpty && candidate.gloss.isEmpty ? candidate.hanzi : "\(candidate.hanzi) \(candidate.pinyin) · \(candidate.gloss)")
                                 }
                             }
                         }

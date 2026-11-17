@@ -10,6 +10,8 @@ struct RecognizedLine: Sendable, Equatable {
     var bounds: CGRect
     /// Original PencilKit text, only when `text` was refined by a second pass.
     var sourceText: String? = nil
+    /// Image-recognition readings for user confirmation, not dictionary meanings.
+    var readings: [String] = []
     var rawText: String { sourceText ?? text }
 }
 
@@ -23,10 +25,10 @@ enum InkLineReaderError: Error, LocalizedError, Equatable {
     var errorDescription: String? { "On-device handwriting recognition needs iPadOS 27." }
 }
 
-/// Real PencilKit recognition of each written line, using the existing stroke geometry for line grouping.
+/// Prefer native stroke recognition, with a Chinese image fallback where it is unavailable.
 struct PencilInkLineReader: InkLineReader {
     enum Mode: Sendable {
-        /// PencilKit text only (flashcards).
+        /// Primary text for flashcards; image fallback if Chinese stroke recognition is unavailable.
         case primaryOnly
         /// Suggestions: DEBUG builds may add the bounded Hanzi-prefix Paddle second pass.
         case suggestions
@@ -36,14 +38,21 @@ struct PencilInkLineReader: InkLineReader {
 
     func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
         guard !drawing.strokes.isEmpty else { return [] }
-        guard #available(iOS 27.0, *) else { throw InkLineReaderError.unsupported }
+        // The simulator exposes English-only stroke recognition. Read rendered ink in
+        // Chinese instead of interpreting Hanzi as English letters. Also works on older OSes.
+        guard #available(iOS 27.0, *),
+              PKStrokeRecognizer.supportedLanguages.contains(where: { $0.maximalIdentifier.hasPrefix("zh-Hans") }) else {
+            return try await VisionInkReader.shared.lines(in: drawing)
+        }
+        let recognizer = PKStrokeRecognizer(preferredLanguages: RecognitionProbe.preferredLanguages)
+        await recognizer.updateDrawing(drawing)
         var result: [RecognizedLine] = []
         for group in InkLineGeometry.lineGroups(in: drawing) where !group.isEmpty {
             try Task.checkCancellation()
             let strokes = group.map { drawing.strokes[$0] }
             let bounds = strokes.dropFirst().reduce(strokes[0].renderBounds) { $0.union($1.renderBounds) }
             guard bounds.minX.isFinite, bounds.maxY.isFinite, bounds.width.isFinite, bounds.height.isFinite else { continue }
-            let text = await RecognitionProbe.recognizedText(in: PKDrawing(strokes: strokes), strokeIDs: Set(strokes.map(\.id)))
+            let text = await recognizer.recognizedText(strokeIDs: Set(strokes.map(\.id)))
             if let raw = text, !raw.isEmpty {
                 var text = raw
                 if mode == .suggestions { text = await HanziPrefixFallback.resolve(primary: raw, strokes: strokes) }
@@ -72,6 +81,7 @@ struct PendingSuggestion: Identifiable, Equatable {
     var annotationText: String {
         // An alternative is a different word: its note is always complete and never relies on what the
         // primary's Hanzi/gloss flags say is already written.
+        if candidate.pinyin.isEmpty && candidate.gloss.isEmpty { return candidate.hanzi }
         if selectedIndex > 0 { return "\(candidate.hanzi) · (\(candidate.pinyin)) · \(candidate.gloss)" }
         var parts: [String] = []
         if !proposal.hanziAlreadyWritten {
@@ -249,7 +259,14 @@ final class PageSuggestionModel {
             status = .message(error is InkLineReaderError ? error.localizedDescription : "Suggestions aren't available right now. Keep writing.")
         case .success(let lines):
             pending = lines.compactMap { line in
-                guard let proposal = vocabulary.proposal(forRecognizedText: line.text) else { return nil }
+                let proposal: SuggestionProposal
+                if let known = vocabulary.proposal(forRecognizedText: line.text) {
+                    proposal = known
+                } else if !line.readings.isEmpty {
+                    proposal = SuggestionProposal(
+                        candidates: line.readings.map { SuggestionCandidate(hanzi: $0, pinyin: "", gloss: "") },
+                        hanziAlreadyWritten: false, glossAlreadyWritten: true)
+                } else { return nil }
                 let alreadyAccepted = annotations.contains { note in
                     note.recognizedText == line.rawText && note.anchor.intersects(line.bounds)
                 }
@@ -257,7 +274,7 @@ final class PageSuggestionModel {
                 return PendingSuggestion(revision: revision, anchor: line.bounds, recognizedText: line.text,
                                          sourceText: line.sourceText, proposal: proposal)
             }
-            status = pending.isEmpty ? .message("No suggestion for this ink. Only a few starter words are known, and nothing was changed.") : .idle
+            status = pending.isEmpty ? .message("No clear reading found. Try a smaller group of words or clearer spacing. Your ink is unchanged.") : .idle
         }
     }
 

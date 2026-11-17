@@ -144,6 +144,19 @@ final class PageSuggestionModelTests {
         #expect(model.annotations.isEmpty)
     }
 
+    @Test func unknownChineseReadingsOfferEditableAlternativesWithoutInventingMeaning() async {
+        let model = model(FixedReader(lines: [RecognizedLine(text: "大人", bounds: line.bounds, readings: ["大人", "太人"])]))
+        await request(model)
+        #expect(model.pending.count == 1)
+        #expect(model.pending.first?.annotationText == "大人")
+        if let item = model.pending.first {
+            model.select(1, for: item.id)
+            #expect(model.pending.first?.annotationText == "太人")
+            model.accept(item.id)
+            #expect(model.annotations.first?.text == "太人")
+        }
+    }
+
     @Test func emptyInkNoMatchAndFailureLeaveNothingPendingAndNeverThrowAway() async {
         let empty = model(FixedReader(lines: [line]))
         empty.request(for: PKDrawing())

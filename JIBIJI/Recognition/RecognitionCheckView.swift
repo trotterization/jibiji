@@ -8,6 +8,8 @@ struct RecognitionCheckView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var report: RecognitionReport?
+    @State private var fallbackText: String?
+    @State private var fallbackElapsed: Duration?
     @State private var query = ""
     @State private var searchResult: String?
     @State private var copied = false
@@ -27,6 +29,17 @@ struct RecognitionCheckView: View {
         NavigationStack {
             Form {
                 if let report {
+                    if !report.supportsSimplifiedChinese {
+                        Section("Chinese image recognition · used by Suggestions") {
+                            Text(fallbackText ?? "Reading Chinese and English ink…")
+                                .textSelection(.enabled)
+                            if let elapsed = fallbackElapsed {
+                                LabeledContent("Latency", value: RecognitionReport.format(elapsed))
+                            }
+                            Text("The stroke recognizer below cannot read Chinese on this device. Suggestions and cards use on-device image recognition instead. Readings still need your confirmation.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
                     results(report)
                 } else {
                     ProgressView("Recognizing ink…")
@@ -54,6 +67,15 @@ struct RecognitionCheckView: View {
             }
             .task {
                 report = await RecognitionProbe.run(on: drawing)
+                if report?.supportsSimplifiedChinese == false {
+                    let clock = ContinuousClock()
+                    let start = clock.now
+                    do {
+                        let lines = try await VisionInkReader.shared.lines(in: drawing)
+                        fallbackText = lines.isEmpty ? "No clear reading found." : lines.map(\.text).joined(separator: "\n")
+                    } catch { fallbackText = "Recognition failed: \(error.localizedDescription)" }
+                    fallbackElapsed = clock.now - start
+                }
             }
             #if DEBUG
             .onChange(of: drawing.dataRepresentation()) {

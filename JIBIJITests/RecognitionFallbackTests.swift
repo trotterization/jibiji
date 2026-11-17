@@ -5,10 +5,8 @@ import UIKit
 import Vision
 @testable import JIBIJI
 
-/// M0 fallback probe: if `PKStrokeRecognizer` can't read Chinese, can Vision read rendered ink?
-///
-/// Test-only on purpose. It records what Vision returns for machine-drawn synthetic ink so the
-/// team can decide on the recognition approach; it isn't part of the app.
+/// Production Chinese fallback coverage plus baseline Vision diagnostics.
+/// Local replay files remain gitignored and never leave the developer machine.
 @Suite("Vision text recognition fallback", .timeLimit(.minutes(1)))
 struct RecognitionFallbackTests {
     static let languages = [Locale.Language(identifier: "zh-Hans"), Locale.Language(identifier: "en-US")]
@@ -34,6 +32,33 @@ struct RecognitionFallbackTests {
         let elapsed = start.duration(to: clock.now)
         let read = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
         print("Vision synthetic \"\(text)\" → \"\(read)\" in \(RecognitionReport.format(elapsed))")
+    }
+
+    @Test func productionReaderRecognizesChineseAndCachesUnchangedInk() async throws {
+        let drawing = SyntheticInk.drawing(writing: "大人")
+        let reader = VisionInkReader()
+        let first = try await reader.lines(in: drawing)
+        #expect(first.contains { !StarterVocabulary.hanzi(in: $0.text).isEmpty })
+        #expect(first.allSatisfy { !$0.readings.isEmpty && $0.bounds.width > 0 && $0.bounds.height > 0 })
+        let cached = try await reader.lines(in: drawing)
+        #expect(cached == first)
+        #expect(try await reader.lines(in: PKDrawing()).isEmpty)
+    }
+
+    @Test(.enabled(if: Bundle(for: ReplayBundleAnchor.self).url(forResource: "LocalPinyinReplay", withExtension: "drawing") != nil))
+    func productionReaderReplaysLocalInk() async throws {
+        let url = try #require(Bundle(for: ReplayBundleAnchor.self).url(forResource: "LocalPinyinReplay", withExtension: "drawing"))
+        let drawing = try PKDrawing(data: Data(contentsOf: url))
+        let clock = ContinuousClock()
+        let start = clock.now
+        let reader = VisionInkReader()
+        let lines = try await reader.lines(in: drawing)
+        print("Production OCR replay: \(lines.map { $0.readings }) in \(clock.now - start)")
+        #expect(!lines.isEmpty)
+        #expect(lines.contains { !StarterVocabulary.hanzi(in: $0.text).isEmpty })
+        let cachedStart = clock.now
+        #expect(try await reader.lines(in: drawing) == lines)
+        print("Cached replay: \(clock.now - cachedStart)")
     }
 
     /// Black ink on white, the way the page looks in light mode.
