@@ -139,18 +139,28 @@ private struct PendingChip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(item.cleanText)
-                .font(Font(CleanHandwriting.font(size: 22)))
-                .foregroundStyle(Color.primary)
-                .lineLimit(1)
-                .contentTransition(.opacity)
-                .padding(.leading, 12)
-                .padding(.trailing, 4)
-                .accessibilityIdentifier("replacementPreview")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.cleanText)
+                    .font(Font(CleanHandwriting.font(size: 22)))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
+                    .accessibilityIdentifier("replacementPreview")
+                if let note = item.uncertaintyNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 320, alignment: .leading)
+                        .accessibilityIdentifier("suggestionUncertainty")
+                }
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 4)
 
             Button("Replace", action: replace)
                 .buttonStyle(SolidButtonStyle())
-                .disabled(item.sourceStrokeIDs.isEmpty)
+                .disabled(item.sourceStrokeIDs.isEmpty || !item.allowsInkReplacement)
                 .accessibilityLabel("Replace handwriting with \(item.cleanText)")
                 .accessibilityIdentifier("replaceHandwriting")
 
