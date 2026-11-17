@@ -75,6 +75,61 @@ enum PinyinOCRResult: Sendable, Equatable {
 /// the dictionary is the space character PaddleOCR appends. Entries may be several code points
 /// (a letter plus a combining tone mark); the joined text is returned in NFC.
 enum PinyinCTC {
+    /// Prefix beam search in log probability space. Blank/repeat paths are summed,
+    /// so alternatives are actual CTC sequences, not fabricated dictionary substitutions.
+    static func alternatives(logits: [Float], steps: Int, classes: Int, dictionary: [String], width: Int = 5) -> [String] {
+        guard classes > 1, steps > 0, logits.count >= steps * classes, width > 0 else { return [] }
+        func sum(_ a: Double, _ b: Double) -> Double {
+            if a == -.infinity { return b }
+            if b == -.infinity { return a }
+            let high = max(a, b)
+            return high + log1p(exp(min(a, b) - high))
+        }
+        struct Beam {
+            var blank: Double = -.infinity
+            var ink: Double = -.infinity
+            var score: Double { max(blank, ink) == -.infinity ? -.infinity : max(blank, ink) + log1p(exp(-abs(blank - ink))) }
+        }
+        var beams: [[Int]: Beam] = [Array<Int>(): Beam(blank: 0)]
+        for step in 0..<steps {
+            let row = step * classes
+            var top: [Int] = []
+            for c in 1..<classes {
+                if top.count < 8 || logits[row + c] > logits[row + top.last!] {
+                    top.append(c)
+                    top.sort { logits[row + $0] > logits[row + $1] }
+                    if top.count > 8 { top.removeLast() }
+                }
+            }
+            var next: [[Int]: Beam] = [:]
+            let blank = log(max(1e-30, Double(logits[row])))
+            for (prefix, state) in beams {
+                var same = next[prefix, default: Beam()]
+                same.blank = sum(same.blank, state.score + blank)
+                next[prefix] = same
+                for c in top {
+                    let probability = log(max(1e-30, Double(logits[row + c])))
+                    if prefix.last == c {
+                        var repeatState = next[prefix, default: Beam()]
+                        repeatState.ink = sum(repeatState.ink, state.ink + probability)
+                        next[prefix] = repeatState
+                    }
+                    let extended = prefix + [c]
+                    var target = next[extended, default: Beam()]
+                    target.ink = sum(target.ink, (prefix.last == c ? state.blank : state.score) + probability)
+                    next[extended] = target
+                }
+            }
+            beams = Dictionary(uniqueKeysWithValues: next.sorted { $0.value.score > $1.value.score }.prefix(width).map { ($0.key, $0.value) })
+        }
+        var result: [String] = []
+        for (prefix, state) in beams.sorted(by: { $0.value.score > $1.value.score }) where state.score.isFinite {
+            let text = prefix.map { $0 - 1 < dictionary.count ? dictionary[$0 - 1] : " " }.joined().precomposedStringWithCanonicalMapping.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty && !result.contains(text) { result.append(text) }
+        }
+        return result
+    }
+
     static func decode(logits: [Float], steps: Int, classes: Int, dictionary: [String]) -> String {
         guard classes > 1, steps > 0, logits.count >= steps * classes else { return "" }
         var text = ""
@@ -475,6 +530,24 @@ actor PinyinOCR {
     private var env: ORTEnv?
     private var loaded: Loaded?
     private var loadedMobile: Loaded?
+
+    /// Keep competing character sequences instead of throwing away everything but
+    /// the greedy winner. Useful for uncertain handwriting; no vocabulary restriction.
+    func readings(_ drawing: PKDrawing) -> [String] {
+        do {
+            guard let model = try load(mobile: true),
+                  let input = PinyinPreprocessor.input(for: drawing, cleanup: true) else { return [] }
+            let data = input.tensor.withUnsafeBytes { NSMutableData(bytes: $0.baseAddress, length: $0.count) }
+            let value = try ORTValue(tensorData: data, elementType: .float,
+                                    shape: [1, 3, NSNumber(value: PinyinPreprocessor.height), NSNumber(value: input.tensorWidth)])
+            let outputs = try model.session.run(withInputs: [model.inputName: value], outputNames: [model.outputName], runOptions: nil)
+            guard let output = outputs[model.outputName] else { return [] }
+            let shape = try output.tensorTypeAndShapeInfo().shape.map(\.intValue)
+            guard shape.count == 3, shape[0] == 1, shape[2] == model.dictionary.count + 2 else { return [] }
+            let logits = (try output.tensorData() as Data).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            return PinyinCTC.alternatives(logits: logits, steps: shape[1], classes: shape[2], dictionary: model.dictionary)
+        } catch { return [] }
+    }
 
     /// The raw server model, unchanged.
     func recognize(_ drawing: PKDrawing) -> PinyinOCRResult {

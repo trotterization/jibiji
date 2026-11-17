@@ -5,10 +5,8 @@ import UIKit
 import Vision
 @testable import JIBIJI
 
-/// M0 fallback probe: if `PKStrokeRecognizer` can't read Chinese, can Vision read rendered ink?
-///
-/// Test-only on purpose. It records what Vision returns for machine-drawn synthetic ink so the
-/// team can decide on the recognition approach; it isn't part of the app.
+/// Production Chinese fallback coverage plus baseline Vision diagnostics.
+/// Local replay files remain gitignored and never leave the developer machine.
 @Suite("Vision text recognition fallback", .timeLimit(.minutes(1)))
 struct RecognitionFallbackTests {
     static let languages = [Locale.Language(identifier: "zh-Hans"), Locale.Language(identifier: "en-US")]
@@ -34,6 +32,40 @@ struct RecognitionFallbackTests {
         let elapsed = start.duration(to: clock.now)
         let read = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
         print("Vision synthetic \"\(text)\" → \"\(read)\" in \(RecognitionReport.format(elapsed))")
+    }
+
+    @Test func productionReaderRecognizesChineseAndCachesUnchangedInk() async throws {
+        let drawing = SyntheticInk.drawing(writing: "大人")
+        let reader = VisionInkReader()
+        let first = try await reader.lines(in: drawing)
+        #expect(first.contains { !StarterVocabulary.hanzi(in: $0.text).isEmpty })
+        #expect(first.allSatisfy { !$0.readings.isEmpty && $0.bounds.width > 0 && $0.bounds.height > 0 })
+        let cached = try await reader.lines(in: drawing)
+        #expect(cached == first)
+        #expect(try await reader.lines(in: PKDrawing()).isEmpty)
+    }
+
+    @Test(.enabled(if: Bundle(for: ReplayBundleAnchor.self).url(forResource: "LocalPinyinReplay", withExtension: "drawing") != nil))
+    func productionReaderReplaysLocalInk() async throws {
+        let url = try #require(Bundle(for: ReplayBundleAnchor.self).url(forResource: "LocalPinyinReplay", withExtension: "drawing"))
+        let drawing = try PKDrawing(data: Data(contentsOf: url))
+        let clock = ContinuousClock()
+        let start = clock.now
+        let reader = VisionInkReader()
+        let lines = try await reader.lines(in: drawing)
+        print("Production OCR replay: \(lines.map { $0.readings }) in \(clock.now - start)")
+        #expect(!lines.isEmpty)
+        #expect(lines.contains { !StarterVocabulary.hanzi(in: $0.text).isEmpty })
+        for indices in VisionInkReader.regions(in: drawing) {
+            let crop = PKDrawing(strokes: indices.map { drawing.strokes[$0] })
+            let mobile = await PinyinOCR.shared.recognizeMobile(crop)
+            let server = await PinyinOCR.shared.recognize(crop)
+            print("Beam: \(await PinyinOCR.shared.readings(crop))")
+            print("Region \(crop.bounds): mobile=\(mobile.text ?? "missing"), server=\(server.text ?? "missing")")
+        }
+        let cachedStart = clock.now
+        #expect(try await reader.lines(in: drawing) == lines)
+        print("Cached replay: \(clock.now - cachedStart)")
     }
 
     /// Black ink on white, the way the page looks in light mode.
@@ -74,6 +106,30 @@ struct PinyinOCRTests {
 
         #expect(text == "nǐ hǎo")
         #expect(text.unicodeScalars.count == "nǐ hǎo".precomposedStringWithCanonicalMapping.unicodeScalars.count)
+    }
+
+    @Test func beamDecoderMatchesExhaustiveCTCPaths() {
+        let rows: [[Float]] = [[0.35, 0.4, 0.25], [0.5, 0.2, 0.3], [0.2, 0.45, 0.35]]
+        var probabilities: [String: Double] = [:]
+        for a in 0..<3 { for b in 0..<3 { for c in 0..<3 {
+            let path = [a, b, c]
+            var previous = 0
+            var text = ""
+            for symbol in path {
+                if symbol != 0 && symbol != previous { text += symbol == 1 ? "牛" : "我" }
+                previous = symbol
+            }
+            probabilities[text, default: 0] += Double(rows[0][a]) * Double(rows[1][b]) * Double(rows[2][c])
+        } } }
+        let expected = probabilities.filter { !$0.key.isEmpty }.sorted { $0.value > $1.value }.map(\.key)
+        let decoded = PinyinCTC.alternatives(logits: rows.flatMap { $0 }, steps: 3, classes: 3, dictionary: ["牛", "我"], width: 50)
+        #expect(decoded == expected)
+    }
+
+    @Test func beamKeepsAccentsAndBlankSeparatedRepeats() {
+        let repeated = Self.logits(for: [1, 0, 1])
+        #expect(PinyinCTC.alternatives(logits: repeated, steps: 3, classes: Self.dictionary.count + 2, dictionary: Self.dictionary).first == "nn")
+        #expect(PinyinCTC.alternatives(logits: [], steps: 0, classes: 0, dictionary: []).isEmpty)
     }
 
     @Test func blankSeparatesRepeatedClasses() {

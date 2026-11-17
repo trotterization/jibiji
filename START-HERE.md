@@ -12,7 +12,7 @@ The first shared objective, a physical-iPad end-to-end run, is in [CLAUDE.md](CL
 
 ## Optional local recognition models
 
-The Pinyin OCR models are not in the repo (gitignored). The app builds and runs without them. Without them, the optional Paddle features, which exist in Debug builds only, report the model as missing. Ordinary suggestions keep using PencilKit, which is less accurate on tone marks. Vision is a separate manual diagnostic and isn't a fallback.
+The Pinyin OCR models are not in the repo (gitignored). The app builds and runs without them. Without them, the optional Paddle diagnostics report the model as missing. When PencilKit does not support Simplified Chinese, suggestions and cards now use on-device Vision image recognition, split into local ink regions. In Debug builds, the mobile Paddle model adds a second reading for those regions when installed. Possible readings are provisional and editable; they do not supply dictionary meanings. Unchanged image-recognition results are cached in memory. PencilKit remains the primary reader on devices that support Chinese.
 
 To enable them, put these files in `JIBIJI/Recognition/` with exactly these names:
 
