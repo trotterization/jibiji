@@ -48,6 +48,18 @@ enum ReadingCrossCheck {
 
     private struct Piece { var text: String; var isWord: Bool }
 
+    /// A whitespace-separated word split into leading punctuation, its letters, and trailing punctuation.
+    private struct Word {
+        var lead = "", core = "", trail = ""
+        init(_ text: String) {
+            guard let first = text.firstIndex(where: \.isLetter), let last = text.lastIndex(where: \.isLetter) else {
+                lead = text; return
+            }
+            lead = String(text[..<first]); core = String(text[first...last]); trail = String(text[text.index(after: last)...])
+        }
+        var rebuilt: String { lead + core + trail }
+    }
+
     /// Splits into whitespace-separated words and the whitespace between them, so text can be rebuilt exactly.
     private static func pieces(_ text: String) -> [Piece] {
         var result: [Piece] = []
@@ -65,9 +77,13 @@ enum ReadingCrossCheck {
         return result
     }
 
-    private static func isLatinWord(_ word: String) -> Bool {
+    /// Only letters, none of them Hanzi. Words with inner punctuation (xi'an) or attached Hanzi are left alone.
+    private static func isLatinCore(_ word: String) -> Bool {
         !word.isEmpty && word.allSatisfy { $0.isLetter && StarterVocabulary.hanzi(in: String($0)).isEmpty }
     }
+
+    private static func folded(_ word: String) -> String { StarterVocabulary.latinTokens(word).joined() }
+    private static func hasToneMarks(_ word: String) -> Bool { word.precomposedStringWithCanonicalMapping.lowercased() != folded(word) && word.contains { $0.isLetter && String($0).folding(options: .diacriticInsensitive, locale: nil) != String($0) } }
 
     static func resolve(primary: String, alternatives: [String]) -> Outcome {
         let unchanged = Outcome(text: primary, status: .agreed, note: nil)
@@ -77,15 +93,13 @@ enum ReadingCrossCheck {
 
         var parts = pieces(primary)
         let wordIndices = parts.indices.filter { parts[$0].isWord }
-        let primaryWords = wordIndices.map { parts[$0].text }
-        // Only readings that agree on the Hanzi and on the number of words can be compared word by word.
+        let primaryWords = wordIndices.map { Word(parts[$0].text) }
+        // Only readings that agree on the Hanzi and the number of words can be compared word by word.
+        // Others (for example a recognizer's other candidate lines) are ignored, not treated as disagreement.
         let comparable = others.filter { alternative in
             StarterVocabulary.hanziRuns(in: alternative) == runs && pieces(alternative).filter(\.isWord).count == primaryWords.count
-        }.map { alternative in pieces(alternative).filter(\.isWord).map(\.text) }
-        guard !comparable.isEmpty else {
-            return Outcome(text: primary, status: .unresolved,
-                           note: "Other readings of this line don't line up with it, so it was kept as read. Check it.")
-        }
+        }.map { alternative in pieces(alternative).filter(\.isWord).map { Word($0.text).core } }
+        guard !comparable.isEmpty else { return unchanged }
 
         let hint = romanization(of: runs.joined())
         var corrected = false
@@ -94,22 +108,40 @@ enum ReadingCrossCheck {
 
         for (position, index) in wordIndices.enumerated() {
             let word = primaryWords[position]
-            let folded = StarterVocabulary.latinTokens(word).joined()
-            if isLatinWord(word), isPinyin(word), hint.hasPrefix(confirmed + folded) { confirmed += folded; continue }
-            guard isLatinWord(word) else { continue }
-            let proposals = Set(comparable.map { $0[position] }).filter { $0 != word }
-            guard !proposals.isEmpty else { continue }
-            // A valid Pinyin word that continues the Hanzi's own romanization, supported by another reading.
-            let fitting = proposals.filter { isLatinWord($0) && isPinyin($0) && hint.hasPrefix(confirmed + StarterVocabulary.latinTokens($0).joined()) }
-            let fittingFolded = Set(fitting.map { StarterVocabulary.latinTokens($0).joined() })
-            if fittingFolded.count == 1, let replacement = fitting.sorted().first, !hint.isEmpty {
-                parts[index].text = replacement
-                confirmed += StarterVocabulary.latinTokens(replacement).joined()
-                corrected = true
-            } else if proposals.contains(where: { isLatinWord($0) && isPinyin($0) }) {
-                // (Differences between plain English words are not a Pinyin disagreement and are ignored.)
-                unresolvedNotes.append("“\(word)” vs “\(proposals.sorted().joined(separator: "”, “"))”")
+            guard isLatinCore(word.core) else { continue }
+            let primaryFolded = folded(word.core)
+            let primaryValid = isPinyin(word.core)
+            // Words after the Hanzi's whole romanization is accounted for are English, not Pinyin.
+            let slotOpen = confirmed.count < hint.count
+            let alternativesHere = comparable.map { $0[position] }
+
+            if primaryValid, slotOpen, hint.hasPrefix(confirmed + primaryFolded) {
+                // Fits the Hanzi. Only two toned readings that conflict are worth flagging.
+                let conflicting = alternativesHere.filter {
+                    $0 != word.core && isPinyin($0) && folded($0) == primaryFolded && hasToneMarks($0) && hasToneMarks(word.core)
+                }
+                if !conflicting.isEmpty {
+                    unresolvedNotes.append("“\(word.core)” vs “\(Set(conflicting).sorted().joined(separator: "”, “"))” (tones)")
+                }
+                confirmed += primaryFolded
+                continue
             }
+            let proposals = Set(alternativesHere).filter { $0 != word.core && isLatinCore($0) }
+            guard !proposals.isEmpty else { continue }
+            let fitting = slotOpen && !hint.isEmpty
+                ? proposals.filter { isPinyin($0) && hint.hasPrefix(confirmed + folded($0)) } : []
+            let fittingLetters = Set(fitting.map(folded))
+            if !primaryValid, fittingLetters.count == 1, let best = fitting.sorted(by: { (hasToneMarks($0) ? 0 : 1, $0) < (hasToneMarks($1) ? 0 : 1, $1) }).first {
+                // A toned reading with the same letters is preferred (nóng over nong).
+                parts[index].text = Word(parts[index].text).lead + best + Word(parts[index].text).trail
+                confirmed += folded(best)
+                corrected = true
+            } else if !fittingLetters.isEmpty || (!primaryValid && proposals.contains { isPinyin($0) }) {
+                // Another reading fits the Hanzi but the primary (a valid word) is kept, or the readings
+                // are in conflict. A valid primary may be a less common reading of the Hanzi, so don't override it.
+                unresolvedNotes.append("“\(word.core)” vs “\(proposals.sorted().joined(separator: "”, “"))”")
+            }
+            // Otherwise the words differ only as plain English, or neither can be Pinyin here: ignored.
         }
 
         if !unresolvedNotes.isEmpty {
@@ -117,14 +149,23 @@ enum ReadingCrossCheck {
                            note: "Readings disagree (\(unresolvedNotes.joined(separator: "; "))) and nothing settles it. Kept as read; check it.")
         }
         guard corrected else { return unchanged }
-        let text = parts.map(\.text).joined()
-        return Outcome(text: text, status: .corrected,
+        return Outcome(text: parts.map(\.text).joined(), status: .corrected,
                        note: "Pinyin corrected from another reading of the same ink to fit the Hanzi (was “\(primary)”). Your ink is unchanged.")
     }
 
-    /// Whether the primary reading has Hanzi plus a Latin word that is not Pinyin, so a second opinion is worth asking for.
+    /// Whether the primary reading has a Latin word in the Pinyin slot after its Hanzi that is not Pinyin,
+    /// so a second opinion is worth asking for.
     static func wantsSecondOpinion(_ primary: String) -> Bool {
-        guard !StarterVocabulary.hanziRuns(in: primary).isEmpty else { return false }
-        return pieces(primary).contains { $0.isWord && isLatinWord($0.text) && !isPinyin($0.text) }
+        let runs = StarterVocabulary.hanziRuns(in: primary)
+        guard !runs.isEmpty else { return false }
+        let hint = romanization(of: runs.joined())
+        var confirmed = ""
+        for piece in pieces(primary) where piece.isWord {
+            let word = Word(piece.text)
+            guard isLatinCore(word.core), confirmed.count < hint.count else { continue }
+            if isPinyin(word.core), hint.hasPrefix(confirmed + folded(word.core)) { confirmed += folded(word.core); continue }
+            if !isPinyin(word.core) { return true }
+        }
+        return false
     }
 }

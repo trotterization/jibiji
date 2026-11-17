@@ -14,17 +14,54 @@ struct ReadingCrossCheckTests {
     }
 
     @Test func primaryNoneWithAlternativeNongNearNongCorrectsTheDraft() {
-        let outcome = ReadingCrossCheck.resolve(primary: "农夫 none fu", alternatives: ["农夫 nong fu", "农夫 nóng fu"])
-        // Two alternatives disagree on tone marks but agree on letters: both fit; the first (sorted) wins and is a valid reading.
-        #expect(outcome.status == .corrected)
-        #expect(StarterVocabulary.latinTokens(outcome.text).joined() == "nongfu")
-        #expect(outcome.text.hasPrefix("农夫 "))
+        let outcome = ReadingCrossCheck.resolve(primary: "农夫 none fu", alternatives: ["农夫 nong fu"])
+        #expect(outcome.status == .corrected && outcome.text == "农夫 nong fu")
     }
 
-    @Test func validButMisfitPrimaryIsCorrectedByTheHanziContext() {
-        // nang is valid Pinyin but doesn't continue 农夫's romanization; nong does.
+    @Test func validButMisfitPrimaryIsFlaggedNotOverridden() {
+        // nang is valid Pinyin (maybe a rarer reading), so it is kept as read and flagged, never overridden.
         let outcome = ReadingCrossCheck.resolve(primary: "农夫 nang fu", alternatives: ["农夫 nong fu"])
-        #expect(outcome.status == .corrected && outcome.text == "农夫 nong fu")
+        #expect(outcome.status == .unresolved && outcome.text == "农夫 nang fu")
+    }
+
+    @Test func polyphonicHanziIsNeverSilentlyCorrected() {
+        // 行 romanizes to xing by default, but yin hang is right: keep it, flag the disagreement.
+        let outcome = ReadingCrossCheck.resolve(primary: "银行 yin hang", alternatives: ["银行 yin xing"])
+        #expect(outcome.status == .unresolved && outcome.text == "银行 yin hang")
+    }
+
+    @Test func tonedAlternativeIsPreferredWhenLettersAgree() {
+        let outcome = ReadingCrossCheck.resolve(primary: "农夫 none fu", alternatives: ["农夫 nong fu", "农夫 nóng fu"])
+        #expect(outcome.status == .corrected && outcome.text == "农夫 nóng fu")
+    }
+
+    @Test func conflictingTonesOnAValidWordAreFlagged() {
+        let outcome = ReadingCrossCheck.resolve(primary: "农夫 nóng fu", alternatives: ["农夫 nòng fu"])
+        #expect(outcome.status == .unresolved && outcome.text == "农夫 nóng fu")
+    }
+
+    @Test func untonedAgreementIsNotAConflict() {
+        #expect(ReadingCrossCheck.resolve(primary: "农夫 nóng fu", alternatives: ["农夫 nong fu"]).status == .agreed)
+    }
+
+    @Test func punctuationStaysAttachedWhileTheWordIsCorrected() {
+        let outcome = ReadingCrossCheck.resolve(primary: "农夫 none? fu", alternatives: ["农夫 nong? fu"])
+        #expect(outcome.status == .corrected && outcome.text == "农夫 nong? fu")
+        let quoted = ReadingCrossCheck.resolve(primary: "农夫 (none) fu", alternatives: ["农夫 (nong) fu"])
+        #expect(quoted.text == "农夫 (nong) fu")
+    }
+
+    @Test func englishWordsThatAreAlsoPinyinAreNotFlagged() {
+        // After the Hanzi's Pinyin is complete, "he" vs "me" is plain English, not a Pinyin disagreement.
+        let outcome = ReadingCrossCheck.resolve(primary: "农夫 nong fu he", alternatives: ["农夫 nong fu me"])
+        #expect(outcome.status == .agreed)
+    }
+
+    @Test func linesThatDontLineUpAreIgnoredNotFlagged() {
+        // A recognizer's other candidate lines (different Hanzi or word count) say nothing about this line.
+        #expect(ReadingCrossCheck.resolve(primary: "好", alternatives: ["女子", "好 hao"]).status == .agreed)
+        let line = RecognizedLine(text: "好", bounds: .zero, readings: ["好", "女子"]).crossChecked()
+        #expect(!line.needsReview && !line.inkEditSuppressed)
     }
 
     @Test func singleAlternativeIsEnough() {
@@ -35,9 +72,9 @@ struct ReadingCrossCheckTests {
     }
 
     @Test func englishIsNeverChanged() {
-        let outcome = ReadingCrossCheck.resolve(primary: "农夫 none fu farmers market", alternatives: ["农夫 nong fu farmer market"])
-        #expect(outcome.text == "农夫 none fu farmers market".replacingOccurrences(of: "none", with: "nong"))
-        #expect(outcome.text.hasSuffix("farmers market"))
+        let outcome = ReadingCrossCheck.resolve(primary: "农夫 none fu farmers market", alternatives: ["农夫 nong fu farmer markets"])
+        #expect(outcome.status == .corrected)
+        #expect(outcome.text == "农夫 nong fu farmers market")
     }
 
     @Test func agreeingReadingsChangeNothing() {
@@ -60,17 +97,16 @@ struct ReadingCrossCheckTests {
         #expect(outcome.text == "农夫 none fu")
     }
 
-    @Test func conflictingAlternativesThatBothFitStayUnresolved() {
-        // Two valid, different fits can't both be right; keep what was read and flag it.
+    @Test func sameLettersWithDifferentTonesIsOneFittingReading() {
         let outcome = ReadingCrossCheck.resolve(primary: "好像 hao xaing", alternatives: ["好像 hao xiang", "好像 hao xiàng"])
-        // Same letters, different tone marks: one letter-sequence, so it is a single fitting reading.
         #expect(outcome.status == .corrected)
-        #expect(StarterVocabulary.latinTokens(outcome.text).joined() == "haoxiang")
+        #expect(outcome.text == "好像 hao xiàng")
     }
 
     @Test func readingsThatDisagreeOnHanziAreNotAligned() {
+        // A reading with different Hanzi can't be aligned word by word, so it changes nothing (and isn't a Pinyin disagreement).
         let outcome = ReadingCrossCheck.resolve(primary: "农夫 none fu", alternatives: ["衣夫 nong fu"])
-        #expect(outcome.status == .unresolved)
+        #expect(outcome.status == .agreed)
         #expect(outcome.text == "农夫 none fu")
     }
 

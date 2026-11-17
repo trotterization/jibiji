@@ -335,4 +335,18 @@ final class PageFlashcardTests: XCTestCase {
         XCTAssertEqual(model.cards.count, 1)
         XCTAssertTrue(model.cards[0].needsReview)
     }
+
+    func testReReadingAnApprovedCardAsUnresolvedFlagsItAgain() throws {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: FakeReader(result: []))
+        model.inkChanged(PKDrawing())
+        let digest = model.currentDigest!
+        model.merge(lines: [RecognizedLine(text: "农夫 nong fu farmer", bounds: .zero)], digest: digest)
+        let id = try XCTUnwrap(model.cards.first?.id)
+        model.approve(id)
+        let flagged = RecognizedLine(text: "农夫 nong fu farmer", bounds: .zero, needsReview: true)
+        model.merge(lines: [flagged], digest: digest)
+        XCTAssertEqual(model.cards.count, 1)
+        XCTAssertTrue(model.cards[0].needsReview)
+        XCTAssertEqual(model.cards[0].status, .draft)
+    }
 }
