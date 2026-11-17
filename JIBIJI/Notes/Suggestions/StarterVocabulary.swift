@@ -36,6 +36,14 @@ enum PinyinState: Equatable, Sendable {
     /// Letters one edit away from the word's Pinyin, next to its Hanzi. Could be a misspelling or a misread
     /// of the handwriting, so this is shown as uncertain and never used to change the ink.
     case possibleSpelling(written: String)
+
+    /// A tone or spelling mismatch that could be the recognizer's mistake rather than the student's.
+    var isUncertain: Bool {
+        switch self {
+        case .wrongTones, .possibleSpelling: return true
+        default: return false
+        }
+    }
 }
 
 /// A small, explicitly offline starter list used to prove the inline-suggestion flow.

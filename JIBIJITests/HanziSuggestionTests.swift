@@ -72,6 +72,14 @@ struct HanziSuggestionTests {
         #expect(!pending.allowsInkReplacement)
     }
 
+    @Test func alternativesCannotBypassTheInkGuard() throws {
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: "负责 fùzè"))
+        var pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "负责 fùzè", proposal: proposal)
+        pending.selectedIndex = 1
+        #expect(proposal.pinyinState.isUncertain && !pending.allowsInkReplacement)
+        #expect(pending.uncertaintyNote?.contains("only be added as a note") == true)
+    }
+
     @Test func oneLetterOffIsUncertainAndNeverAnInkEdit() throws {
         let text = "农夫市集 none fu shi ji"
         let proposal = try #require(vocabulary.proposal(forRecognizedText: text))
@@ -203,4 +211,35 @@ final class HanziSuggestionModelTests {
         let model = await run([RecognizedLine(text: "hello world", bounds: CGRect(x: 10, y: 10, width: 200, height: 60))])
         #expect(model.status == .message("No clear reading found. Try a smaller group of words or clearer spacing. Your ink is unchanged."))
     }
+}
+
+@MainActor
+@Suite("Two readings disagree")
+final class ReadingDisagreementTests {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "ReadingDisagreement-\(UUID().uuidString)", directoryHint: .isDirectory)
+    deinit { try? FileManager.default.removeItem(at: directory) }
+
+    @Test func differingPinyinFromTwoReadingsBlocksInkReplacement() async throws {
+        let line = RecognizedLine(text: "好 hǎo xiāng", bounds: CGRect(x: 10, y: 10, width: 200, height: 60), sourceText: "好 hao xiang")
+        let model = PageSuggestionModel(pageID: "page-1", store: SuggestionStore(directory: directory), reader: StubReaderLocal(lines: [line]))
+        model.request(for: SyntheticInk.drawing(writing: "十"))
+        await model.task?.value
+        let item = try #require(model.pending.first)
+        #expect(!item.allowsInkReplacement)
+        #expect(item.uncertaintyNote?.contains("disagree") == true)
+    }
+
+    @Test func sameLatinFromBothReadingsStaysSolid() async throws {
+        let line = RecognizedLine(text: "好 hao xiang", bounds: CGRect(x: 10, y: 10, width: 200, height: 60), sourceText: "好 hao xiang")
+        let model = PageSuggestionModel(pageID: "page-1", store: SuggestionStore(directory: directory), reader: StubReaderLocal(lines: [line]))
+        model.request(for: SyntheticInk.drawing(writing: "十"))
+        await model.task?.value
+        #expect(model.pending.first?.allowsInkReplacement == true)
+    }
+}
+
+private struct StubReaderLocal: InkLineReader {
+    var lines: [RecognizedLine]
+    func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] { lines }
 }

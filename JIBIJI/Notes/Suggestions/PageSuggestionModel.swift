@@ -77,6 +77,9 @@ struct PendingSuggestion: Identifiable, Equatable {
     var proposal: SuggestionProposal
     var selectedIndex = 0
     var sourceStrokeIDs: Set<String> = []
+    /// Why this line's reading is uncertain beyond its Pinyin (e.g. two recognizers disagree). Never edits ink.
+    var readingNote: String? = nil
+    var inkEditSuppressed = false
 
     var candidate: SuggestionCandidate { proposal.candidates[selectedIndex] }
 
@@ -95,7 +98,10 @@ struct PendingSuggestion: Identifiable, Equatable {
 
     /// Plain-language caveat shown with the suggestion, or nil when the writing needs none.
     var uncertaintyNote: String? {
-        guard selectedIndex == 0 else { return nil }
+        if let readingNote { return readingNote }
+        guard selectedIndex == 0 else {
+            return proposal.pinyinState.isUncertain ? "The line as written was uncertain, so this alternative can only be added as a note." : nil
+        }
         switch proposal.pinyinState {
         case .wrongTones(let written):
             return "Tone marks differ from “\(candidate.pinyin)” (you wrote “\(written)”). Check before accepting."
@@ -108,9 +114,7 @@ struct PendingSuggestion: Identifiable, Equatable {
     /// Replacing ink is offered only when the reading is solid. A tone or spelling mismatch could be the
     /// recognizer's mistake, so those stay notes beside the ink.
     var allowsInkReplacement: Bool {
-        if selectedIndex == 0, case .wrongTones = proposal.pinyinState { return false }
-        if selectedIndex == 0, case .possibleSpelling = proposal.pinyinState { return false }
-        return true
+        !inkEditSuppressed && !proposal.pinyinState.isUncertain
     }
 
     /// The note to add beside the ink: Hanzi unless already written, then the gloss unless already written.
@@ -326,9 +330,16 @@ final class PageSuggestionModel {
                     note.recognizedText == line.rawText && note.anchor.intersects(line.bounds) && Self.isVisible(note, in: drawing)
                 }
                 if alreadyAccepted { return nil }
+                // Two recognizers read the Latin part differently: it may be a misread, not the student's slip.
+                var readingNote: String?
+                if let source = line.sourceText,
+                   StarterVocabulary.latinTokenPairs(source).map(\.raw) != StarterVocabulary.latinTokenPairs(line.text).map(\.raw) {
+                    readingNote = "Two readings of this ink disagree on the Pinyin, so it is uncertain. Check it. Your ink is unchanged."
+                }
                 return PendingSuggestion(revision: revision, anchor: line.bounds, recognizedText: line.text,
                                          sourceText: line.sourceText, proposal: proposal,
-                                         sourceStrokeIDs: Set(InkSelection.indices(in: drawing, bounds: line.bounds).map { InkSelection.identity(drawing.strokes[$0]) }))
+                                         sourceStrokeIDs: Set(InkSelection.indices(in: drawing, bounds: line.bounds).map { InkSelection.identity(drawing.strokes[$0]) }),
+                                         readingNote: readingNote, inkEditSuppressed: readingNote != nil)
             }
             // Only when nothing else was offered, so it never sits beside working suggestions looking like a failure.
             if pending.isEmpty, !unmatched.isEmpty {
@@ -427,7 +438,8 @@ final class PageSuggestionModel {
         pending = items.filter { !$0.anchor.intersects(bounds) }.map { item in
             return PendingSuggestion(revision: revision, anchor: item.anchor, recognizedText: item.recognizedText,
                                         sourceText: item.sourceText, proposal: item.proposal,
-                                        selectedIndex: item.selectedIndex, sourceStrokeIDs: item.sourceStrokeIDs)
+                                        selectedIndex: item.selectedIndex, sourceStrokeIDs: item.sourceStrokeIDs,
+                                        readingNote: item.readingNote, inkEditSuppressed: item.inkEditSuppressed)
         }
     }
 

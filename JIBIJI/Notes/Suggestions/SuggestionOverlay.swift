@@ -142,7 +142,8 @@ private struct PendingChip: View {
     var body: some View {
         HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.cleanText)
+                // What Replace would write, or (when ink can't be replaced) exactly what "Add as note" saves.
+                Text(item.allowsInkReplacement ? item.cleanText : item.annotationText)
                     .font(Font(CleanHandwriting.font(size: 22)))
                     .foregroundStyle(Color.primary)
                     .lineLimit(1)
@@ -182,10 +183,8 @@ private struct PendingChip: View {
                         }
                     }
                 }
-                if !item.allowsInkReplacement {
-                    Button("Add as note", systemImage: "note.text", action: addNote)
-                        .accessibilityIdentifier("addSuggestionNote")
-                }
+                Button("Add as note (keep ink)", systemImage: "note.text", action: addNote)
+                    .accessibilityIdentifier("addSuggestionNote")
                 Button("Edit…", systemImage: "pencil", action: edit)
                     .disabled(!item.allowsInkReplacement)
                 Button("Skip", systemImage: "xmark", action: skip)
