@@ -8,6 +8,7 @@ struct HomeView: View {
     let notebook: NotebookModel
     let openPage: (String) -> Void
     let showCover: () -> Void
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     enum Layout: String, CaseIterable { case grid, list }
     enum CardSize: String, CaseIterable {
@@ -49,6 +50,9 @@ struct HomeView: View {
     private struct PageEditorTarget: Identifiable { var id: String }
     @State private var editingPage: PageEditorTarget?
     @State private var editingBackground = false
+    @State private var showsDocuments = false
+    @State private var showsSync = false
+    @State private var search = ""
     /// Bumped whenever the home page appears, so previews and dates are fresh.
     @State private var revision = 0
 
@@ -68,6 +72,22 @@ struct HomeView: View {
                     header
                     continueCard
                         .padding(.top, 26)
+                    HStack {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search titles, tags, folders, and handwriting", text: $search)
+                            .accessibilityIdentifier("notebookSearch")
+                        Button { notebook.indexHandwriting() } label: {
+                            if notebook.searchIndex.isIndexing { ProgressView() }
+                            else { Image(systemName: "text.viewfinder") }
+                        }.disabled(notebook.searchIndex.isIndexing)
+                            .accessibilityLabel("Index handwriting for search").accessibilityIdentifier("indexHandwriting")
+                    }.padding(14).panel(radius: 14).padding(.top, 24)
+                    if let message = notebook.searchIndex.message {
+                        Text(message).font(.footnote).foregroundStyle(.secondary).padding(.top, 6)
+                    }
+                    Button { showsDocuments = true } label: {
+                        Label("PDF Documents · \(notebook.documents.items.count)", systemImage: "doc.richtext")
+                    }.buttonStyle(.plain).padding(.top, 18).accessibilityIdentifier("openPDFLibrary")
                     filterBar
                         .padding(.top, 34)
                     pageSections
@@ -93,9 +113,13 @@ struct HomeView: View {
         .animation(Theme.Motion.list, value: cardSize)
         .animation(Theme.Motion.list, value: sort)
         .onAppear { revision += 1 }
+        .onDisappear { notebook.searchIndex.cancel() }
         .onChange(of: notebook.library.folders) { _, folders in
             if case .folder(let name) = filter, !folders.contains(name) { filter = .all }
         }
+        .onChange(of: isPresentingEditor) { _, active in notebook.homeEditorIsOpen = active }
+        .sheet(isPresented: $showsSync) { SyncSettingsView(notebook: notebook) }
+        .fullScreenCover(isPresented: $showsDocuments) { PDFLibraryView(library: notebook.documents) }
         .sheet(item: $editingPage) { target in
             HomePageDetailsEditor(notebook: notebook, pageID: target.id)
                 .presentationDetents([.large]).presentationDragIndicator(.visible)
@@ -116,6 +140,8 @@ struct HomeView: View {
             Text(notebook.alert ?? "")
         }
     }
+
+    private var isPresentingEditor: Bool { showsDocuments || editingPage != nil || editingBackground || naming != nil }
 
     // MARK: Top
 
@@ -152,8 +178,8 @@ struct HomeView: View {
             Button {
                 newPage()
             } label: {
-                Label("New Page", systemImage: "plus")
-                    .labelStyle(.titleAndIcon)
+                if sizeClass == .compact { Image(systemName: "plus").accessibilityLabel("New Page") }
+                else { Label("New Page", systemImage: "plus").labelStyle(.titleAndIcon) }
             }
             .buttonStyle(SolidButtonStyle())
             .disabled(notebook.loadState != .ready)
@@ -187,6 +213,7 @@ struct HomeView: View {
                 }
             }
             Section {
+                Button("Cloud Sync…", systemImage: "icloud") { showsSync = true }
                 Button("Home Background…", systemImage: "photo.on.rectangle") { editingBackground = true }
                     .accessibilityIdentifier("editHomeBackground")
                 Button("Rename Notebook…", systemImage: "character.cursor.ibeam") { name(.notebook) }
@@ -350,7 +377,9 @@ struct HomeView: View {
     @ViewBuilder
     private var pageSections: some View {
         let shown = pages(in: filter)
-        if filter == .all {
+        if shown.isEmpty, !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ContentUnavailableView.search(text: search)
+        } else if filter == .all {
             let pinned = shown.filter { notebook.info(for: $0).pinned }
             if !pinned.isEmpty {
                 sectionTitle("Pinned")
@@ -408,6 +437,9 @@ struct HomeView: View {
                         if showsDetails {
                             if let summary = notebook.info(for: id).summary {
                                 Text(summary).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            if let labels = notebook.info(for: id).labels, !labels.isEmpty {
+                                Text(labels.map { "#" + $0 }.joined(separator: " ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                             detail(for: id).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                         }
@@ -562,7 +594,7 @@ struct HomeView: View {
     // MARK: Data
 
     private func pages(in filter: Filter) -> [String] {
-        var ids = notebook.pageIDs
+        var ids = notebook.pageIDs.filter { notebook.matchesSearch(search, pageID: $0) }
         switch filter {
         case .all: break
         case .pinned: ids = ids.filter { notebook.info(for: $0).pinned }
