@@ -131,12 +131,20 @@ enum ReadingCrossCheck {
             let fitting = slotOpen && !hint.isEmpty
                 ? proposals.filter { isPinyin($0) && hint.hasPrefix(confirmed + folded($0)) } : []
             let fittingLetters = Set(fitting.map(folded))
-            if !primaryValid, fittingLetters.count == 1, let best = fitting.sorted(by: { (hasToneMarks($0) ? 0 : 1, $0) < (hasToneMarks($1) ? 0 : 1, $1) }).first {
+            let tonedFits = Set(fitting.filter(hasToneMarks))
+            // Two toned readings of the same letters that disagree on tones can't be settled here.
+            let tonesConflict = tonedFits.count > 1
+            // With no Hanzi to anchor to, only a line that otherwise reads as Pinyin is worth flagging.
+            let othersArePinyin = primaryWords.enumerated().allSatisfy { offset, other in
+                offset == position || !isLatinCore(other.core) || isPinyin(other.core)
+            }
+            let pinyinSlotDisagreement = !primaryValid && proposals.contains { isPinyin($0) } && (hint.isEmpty ? othersArePinyin : slotOpen)
+            if !primaryValid, !tonesConflict, fittingLetters.count == 1, let best = fitting.sorted(by: { (hasToneMarks($0) ? 0 : 1, $0) < (hasToneMarks($1) ? 0 : 1, $1) }).first {
                 // A toned reading with the same letters is preferred (nóng over nong).
                 parts[index].text = Word(parts[index].text).lead + best + Word(parts[index].text).trail
                 confirmed += folded(best)
                 corrected = true
-            } else if !fittingLetters.isEmpty || (!primaryValid && proposals.contains { isPinyin($0) }) {
+            } else if !fittingLetters.isEmpty || pinyinSlotDisagreement {
                 // Another reading fits the Hanzi but the primary (a valid word) is kept, or the readings
                 // are in conflict. A valid primary may be a less common reading of the Hanzi, so don't override it.
                 unresolvedNotes.append("“\(word.core)” vs “\(proposals.sorted().joined(separator: "”, “"))”")

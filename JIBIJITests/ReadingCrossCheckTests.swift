@@ -40,6 +40,16 @@ struct ReadingCrossCheckTests {
         #expect(outcome.status == .unresolved && outcome.text == "农夫 nóng fu")
     }
 
+    @Test func conflictingTonedAlternativesForAnInvalidWordStayUnresolved() {
+        let outcome = ReadingCrossCheck.resolve(primary: "农夫 none fu", alternatives: ["农夫 nóng fu", "农夫 nòng fu"])
+        #expect(outcome.status == .unresolved && outcome.text == "农夫 none fu")
+    }
+
+    @Test func plainEnglishVariantsThatHappenToSplitIntoSyllablesAreNotFlagged() {
+        #expect(ReadingCrossCheck.resolve(primary: "农夫 nong fu lines", alternatives: ["农夫 nong fu line"]).status == .agreed)
+        #expect(ReadingCrossCheck.resolve(primary: "the lines", alternatives: ["the line"]).status == .agreed)
+    }
+
     @Test func untonedAgreementIsNotAConflict() {
         #expect(ReadingCrossCheck.resolve(primary: "农夫 nóng fu", alternatives: ["农夫 nong fu"]).status == .agreed)
     }
