@@ -61,7 +61,7 @@ struct PencilCanvasView: UIViewRepresentable {
         // `.default` follows the system "Only Draw with Apple Pencil" setting:
         // Pencil-only on an iPad paired with a Pencil, finger drawing in the Simulator.
         canvas.drawingPolicy = .default
-        canvas.backgroundColor = .systemBackground
+        canvas.backgroundColor = .jibijiPaper
         canvas.isOpaque = true
         canvas.alwaysBounceVertical = false
         canvas.accessibilityIdentifier = "noteCanvas"

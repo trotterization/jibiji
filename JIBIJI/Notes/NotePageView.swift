@@ -10,12 +10,11 @@ struct NotePageView: View {
     @State private var showsCards = false
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle(currentTitle)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { toolbar }
-        }
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.surface.ignoresSafeArea())
+            .safeAreaInset(edge: .top, spacing: 0) { bar }
+            .tint(.primary)
         .alert("Page kept safe", isPresented: showsNotice) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -77,6 +76,7 @@ struct NotePageView: View {
             }
             // Same frame as the canvas, so suggestions can follow its scroll offset.
             .overlay { SuggestionOverlay(suggestions: page.suggestions, drawing: page.drawing, canvas: canvas) }
+            .rises(distance: 0)
             // A separate canvas (and tool picker) per page.
             .id(page.pageID)
             // Scoped to this page's identity; accepted notes are kept.
@@ -89,14 +89,28 @@ struct NotePageView: View {
     }
 
     // Undo, redo, and the eraser live in the system tool palette, as in other iPadOS writing apps.
-    @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarLeading) {
+    /// The floating bar above the page: where you are on the left, what you can do on the right.
+    private var bar: some View {
+        HStack(spacing: 4) {
             if let showCover {
-                Button("Cover", systemImage: "house", action: showCover)
-                    .accessibilityIdentifier("showCover")
+                Button(action: showCover) {
+                    Text("jibiji")
+                        .font(.system(size: 19, weight: .semibold, design: .rounded))
+                        .tracking(-0.6)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .frame(height: 38)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressScaleButtonStyle())
+                .accessibilityLabel("Cover")
+                .accessibilityIdentifier("showCover")
+                Rectangle()
+                    .fill(.white.opacity(0.16))
+                    .frame(width: 1, height: 18)
+                    .padding(.horizontal, 8)
             }
-            Menu("Pages", systemImage: "book.pages") {
+            Menu {
                 ForEach(notebook.pageIDs, id: \.self) { id in
                     Button {
                         notebook.selectPage(id)
@@ -114,39 +128,53 @@ struct NotePageView: View {
                     notebook.createPage()
                 }
                 .accessibilityIdentifier("newPageButton")
+            } label: {
+                Label("Pages", systemImage: "square.on.square")
             }
+            .buttonStyle(BarIconButtonStyle())
             .disabled(notebook.loadState != .ready)
             .accessibilityIdentifier("pagesMenu")
-        }
-        ToolbarItem(placement: .principal) {
-            VStack(spacing: 1) {
+
+            HStack(spacing: 10) {
                 Text(currentTitle)
-                    .font(.headline)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText())
                     .accessibilityIdentifier("pageTitle")
-                Text(currentPage?.statusText ?? "")
-                    .font(.caption)
-                    .foregroundStyle(statusStyle)
-                    .accessibilityIdentifier("pageStatus")
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
+                    Text(currentPage?.statusText ?? "")
+                        .font(.system(size: 13))
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.58))
+                        .contentTransition(.numericText())
+                        .accessibilityIdentifier("pageStatus")
+                }
             }
-        }
-        ToolbarItemGroup(placement: .topBarTrailing) {
+            .lineLimit(1)
+            .padding(.leading, 6)
+            .animation(Theme.Motion.quick, value: currentTitle)
+            .animation(Theme.Motion.quick, value: currentPage?.statusText)
+
+            Spacer(minLength: 8)
+
             if let suggestions = currentPage?.suggestions, suggestions.canUndo {
-                Button("Undo suggestion", systemImage: "arrow.uturn.backward.circle") {
+                Button("Undo suggestion", systemImage: "arrow.uturn.backward") {
                     suggestions.undoLastAccept()
                 }
+                .buttonStyle(BarIconButtonStyle())
                 .accessibilityIdentifier("undoSuggestion")
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
-            Button("Suggest", systemImage: "text.badge.plus") {
-                guard let page = currentPage else { return }
-                page.suggestions.request(for: page.drawing)
-            }
-            .disabled(!(currentPage?.isEditable ?? false))
-            .accessibilityIdentifier("suggestButton")
             Button("Cards", systemImage: "rectangle.on.rectangle") {
                 currentPage?.saveIfNeeded()
                 canvas.resignFocus()
                 showsCards = true
             }
+            .buttonStyle(BarIconButtonStyle())
             .disabled(!(currentPage?.isEditable ?? false))
             .accessibilityIdentifier("cardsButton")
             Button("Check recognition", systemImage: "text.viewfinder") {
@@ -154,14 +182,39 @@ struct NotePageView: View {
                 canvas.resignFocus()
                 showsRecognitionCheck = true
             }
+            .buttonStyle(BarIconButtonStyle())
             .disabled(!(currentPage?.isEditable ?? false))
+            Button {
+                guard let page = currentPage else { return }
+                page.suggestions.request(for: page.drawing)
+            } label: {
+                SuggestLabel(isReading: currentPage?.suggestions.status == .checking)
+            }
+            .buttonStyle(PressScaleButtonStyle())
+            .disabled(!(currentPage?.isEditable ?? false))
+            .accessibilityLabel("Suggest")
+            .accessibilityIdentifier("suggestButton")
+            .padding(.leading, 6)
         }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .frame(height: 54)
+        .background(Theme.bar, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous).strokeBorder(.white.opacity(0.06)))
+        .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .animation(Theme.Motion.list, value: currentPage?.suggestions.canUndo)
+        .rises(after: 0.05, distance: -10)
     }
 
-    private var statusStyle: AnyShapeStyle {
+    private var statusColor: Color {
         switch currentPage?.state {
-        case .failed, .cannotOpen: AnyShapeStyle(.red)
-        default: AnyShapeStyle(.secondary)
+        case .saved: Theme.saved
+        case .unsaved: Theme.pending
+        case .failed, .cannotOpen: Theme.problem
+        default: .white.opacity(0.28)
         }
     }
 
@@ -177,5 +230,43 @@ struct NotePageView: View {
             get: { notebook.alert != nil },
             set: { if !$0 { notebook.alert = nil } }
         )
+    }
+}
+
+/// The bar's one filled control. While the page is being read, three dots take turns.
+private struct SuggestLabel: View {
+    let isReading: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        ZStack {
+            Text("Suggest").opacity(isReading ? 0 : 1)
+            if isReading {
+                ReadingDots().transition(.opacity)
+            }
+        }
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(Color(white: 0.1))
+        .padding(.horizontal, 16)
+        .frame(height: 36)
+        .background(.white.opacity(isEnabled ? 1 : 0.3), in: RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous))
+        .animation(Theme.Motion.quick, value: isReading)
+    }
+}
+
+private struct ReadingDots: View {
+    @State private var running = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .frame(width: 5, height: 5)
+                    .opacity(running ? 1 : 0.25)
+                    .animation(.easeInOut(duration: 0.5).repeatForever().delay(Double(index) * 0.16), value: running)
+            }
+        }
+        .onAppear { running = true }
+        .accessibilityHidden(true)
     }
 }
