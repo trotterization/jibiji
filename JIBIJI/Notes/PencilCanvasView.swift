@@ -21,8 +21,10 @@ final class CanvasController {
     }
 
     /// Makes `canvas` the one the bar drives: its tool, its policy, and its own undo history.
-    fileprivate func attach(_ canvas: NoteCanvasView) {
+    func attach(_ canvas: NoteCanvasView) {
         canvasView = canvas
+        // A new page's canvas starts at zoom 1 and offset 0, whatever the last page was left at.
+        viewportDidChange(of: canvas)
         applyTools()
         undoObservers.forEach(NotificationCenter.default.removeObserver)
         undoObservers = [
@@ -150,6 +152,10 @@ struct PencilCanvasView: UIViewRepresentable {
 
         coordinator.controller = controller
         controller.inkIsPencilOnly = !startsWithPenWithoutSavingTools
+        #if targetEnvironment(simulator)
+        // The Simulator has no Apple Pencil: keep finger drawing there so the page can be written on.
+        controller.inkIsPencilOnly = false
+        #endif
         controller.tools.load(persisting: !startsWithPenWithoutSavingTools)
         controller.attach(canvas)
         return canvas
@@ -184,7 +190,7 @@ struct PencilCanvasView: UIViewRepresentable {
 
         func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
             controller?.viewportDidChange(of: scrollView)
-            (scrollView as? NoteCanvasView)?.fitContentToInk()
+            (scrollView as? NoteCanvasView)?.fitContentToInk(ignoringZoomState: true)
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
@@ -277,25 +283,26 @@ final class NoteCanvasView: PKCanvasView {
     /// Makes the scrollable area cover all of the ink, so strokes written in a larger window
     /// (e.g. portrait before rotating to landscape) stay reachable, including ink that would
     /// otherwise sit under the tool palette. A page whose ink is already in view doesn't scroll.
-    func fitContentToInk() {
+    func fitContentToInk(ignoringZoomState: Bool = false) {
         guard !bounds.isEmpty else { return }
-        // Ink and notes are in page units; the scroll view's contentSize and the visible area are in
-        // screen units (page units times the zoom), so size the page first and scale it at the end.
+        // The page at zoom 1 is as big as the visible area. Ink and notes are in page units; the scroll
+        // view's contentSize is in screen units (page units times the zoom). The tool-bar clearance is a
+        // fixed distance on screen, so it is added after scaling.
         let zoom = max(zoomScale, 0.01)
-        let screen = bounds.inset(by: adjustedContentInset).size
-        let visible = CGSize(width: screen.width / zoom, height: screen.height / zoom)
-        var size = visible
+        let page = bounds.inset(by: adjustedContentInset).size
+        var pageWidth = page.width
+        var height = page.height * zoom
         if !drawing.strokes.isEmpty {
             let ink = drawing.bounds
-            if ink.maxX > visible.width {
-                size.width = ink.maxX + Self.trailingInkMargin
+            if ink.maxX > page.width {
+                pageWidth = ink.maxX + Self.trailingInkMargin
             }
             // Notes sit below their ink, so they must be scrollable above the palette too.
-            size.height = max(visible.height, max(ink.maxY, noteBottom) + Self.paletteClearance / zoom)
+            height = max(height, max(ink.maxY, noteBottom) * zoom + Self.paletteClearance)
         }
-        let scaled = CGSize(width: size.width * zoom, height: size.height * zoom)
-        if contentSize != scaled, !isZooming {
-            contentSize = scaled
+        let size = CGSize(width: pageWidth * zoom, height: height)
+        if contentSize != size, ignoringZoomState || (!isZooming && !isZoomBouncing) {
+            contentSize = size
         }
     }
 

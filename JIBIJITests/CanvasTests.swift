@@ -209,6 +209,36 @@ struct CanvasTests {
         withExtendedLifetime(z) {}
     }
 
+    @Test(arguments: [2.0, 4.0, 0.5])
+    func shortPageStaysScrollableAtEveryZoom(zoom: Double) throws {
+        let z = try zoomable(saved: SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 100, y: 200)))
+        z.canvas.setZoomScale(CGFloat(zoom), animated: false)
+        z.coordinator.scrollViewDidEndZooming(z.canvas, with: nil, atScale: CGFloat(zoom))
+        let page = z.canvas.bounds.inset(by: z.canvas.adjustedContentInset).size
+        // The whole zoomed page can be reached by panning, not just the part that fits the screen.
+        #expect(abs(z.canvas.contentSize.width - page.width * CGFloat(zoom)) < 1)
+        #expect(z.canvas.contentSize.height >= page.height * CGFloat(zoom) - 1)
+        if zoom > 1 {
+            #expect(z.canvas.contentSize.width > page.width && z.canvas.contentSize.height > page.height)
+            z.canvas.contentOffset = CGPoint(x: z.canvas.contentSize.width - page.width, y: z.canvas.contentSize.height - page.height)
+            #expect(z.canvas.contentOffset.x > 0 && z.canvas.contentOffset.y > 0)
+        }
+        withExtendedLifetime(z) {}
+    }
+
+    @Test func switchingPagesResetsTheControllersViewport() throws {
+        let one = try zoomable()
+        one.canvas.setZoomScale(2, animated: false)
+        one.canvas.contentOffset = CGPoint(x: 60, y: 80)
+        one.coordinator.scrollViewDidZoom(one.canvas)
+        #expect(one.controller.zoomScale == 2)
+        let next = try hostedCanvas(size: CGSize(width: 820, height: 1100), saved: PKDrawing(), log: ChangeLog())
+        one.controller.attach(next.canvas)
+        #expect(one.controller.zoomScale == 1)
+        #expect(one.controller.contentOffset == next.canvas.contentOffset)
+        withExtendedLifetime((one, next)) {}
+    }
+
     @Test func undoAndEraseStillWorkWhileZoomedAndSaveRoundTrips() throws {
         let original = SyntheticInk.drawing(writing: "大人十", origin: CGPoint(x: 100, y: 200))
         let z = try zoomable(saved: original)
