@@ -32,6 +32,7 @@ struct SuggestionOverlay: View {
                         item: item,
                         replace: { replace(item, with: item.cleanText) },
                         edit: { editText = item.cleanText; editing = item },
+                        addNote: { suggestions.accept(item.id) },
                         skip: { withAnimation(Theme.Motion.list) { suggestions.dismiss(item.id) } },
                         select: { index in withAnimation(Theme.Motion.quick) { suggestions.select(index, for: item.id) } }
                     )
@@ -134,6 +135,7 @@ private struct PendingChip: View {
     let item: PendingSuggestion
     let replace: () -> Void
     let edit: () -> Void
+    let addNote: () -> Void
     let skip: () -> Void
     let select: (Int) -> Void
 
@@ -180,7 +182,12 @@ private struct PendingChip: View {
                         }
                     }
                 }
+                if !item.allowsInkReplacement {
+                    Button("Add as note", systemImage: "note.text", action: addNote)
+                        .accessibilityIdentifier("addSuggestionNote")
+                }
                 Button("Edit…", systemImage: "pencil", action: edit)
+                    .disabled(!item.allowsInkReplacement)
                 Button("Skip", systemImage: "xmark", action: skip)
                     .accessibilityIdentifier("skipSuggestion")
             } label: {

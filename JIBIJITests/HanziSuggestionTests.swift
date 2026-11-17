@@ -51,6 +51,27 @@ struct HanziSuggestionTests {
         #expect(pending.uncertaintyNote?.contains("hǎo xiāng") == true)
     }
 
+    @Test(arguments: ["好 hǎo xiang", "好 hao xiàng"])
+    func partlyTonedPartialHanziStillAllowsReplacement(text: String) throws {
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: text))
+        #expect(proposal.pinyinState == .missingTones)
+        let pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: text, proposal: proposal)
+        #expect(pending.annotationText == "像 · to seem like; to look like")
+        #expect(pending.allowsInkReplacement && pending.uncertaintyNote == nil)
+    }
+
+    @Test func partlyTonedFullHanziIsMissingTonesNotWrong() throws {
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: "农夫市集 nóng fu shi ji"))
+        #expect(proposal.pinyinState == .missingTones)
+    }
+
+    @Test func wrongToneOnPartialHanziAlsoOffersTheCorrection() throws {
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: "好 hǎo xiāng"))
+        let pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "好 hǎo xiāng", proposal: proposal)
+        #expect(pending.annotationText == "像 · (hǎoxiàng) · to seem like; to look like")
+        #expect(!pending.allowsInkReplacement)
+    }
+
     @Test func oneLetterOffIsUncertainAndNeverAnInkEdit() throws {
         let text = "农夫市集 none fu shi ji"
         let proposal = try #require(vocabulary.proposal(forRecognizedText: text))

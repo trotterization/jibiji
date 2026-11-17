@@ -132,7 +132,10 @@ struct PendingSuggestion: Identifiable, Equatable {
         // A tone-marked reading is also offered for untoned, wrongly toned, or possibly misspelled Pinyin; the
         // note is separate from the student's own writing, which is never changed. (Partial Hanzi keeps the
         // earlier behavior: only the missing character and English.)
-        if proposal.hanziPrefixWritten.isEmpty, !candidate.pinyin.isEmpty, proposal.pinyinState != .correct { parts.append("(\(candidate.pinyin))") }
+        let toneConflict: Bool = { if case .wrongTones = proposal.pinyinState { return true } else { return false } }()
+        if proposal.hanziPrefixWritten.isEmpty || toneConflict, !candidate.pinyin.isEmpty, proposal.pinyinState != .correct {
+            parts.append("(\(candidate.pinyin))")
+        }
         if !proposal.glossAlreadyWritten { parts.append(candidate.gloss) }
         return parts.joined(separator: " · ")
     }

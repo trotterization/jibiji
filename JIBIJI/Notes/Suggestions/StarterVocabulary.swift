@@ -171,12 +171,8 @@ struct StarterVocabulary: Sendable {
                 let expected = entry.pinyin.precomposedStringWithCanonicalMapping.lowercased().filter { !$0.isWhitespace }
                 if misspelled {
                     state = .possibleSpelling(written: written)
-                } else if writtenFlat == expected {
-                    state = .correct
-                } else if writtenFlat == pairs[range].map(\.folded).joined() {
-                    state = .missingTones
                 } else {
-                    state = .wrongTones(written: written)
+                    state = Self.toneState(written: writtenFlat, expected: expected, display: written)
                 }
             }
 
@@ -199,6 +195,19 @@ struct StarterVocabulary: Sendable {
             )
         }
         return nil
+    }
+
+    /// Same letters, so compare tone marks letter by letter: a written mark that conflicts is wrong;
+    /// marks that are all right but incomplete (hǎo xiang) are just missing tones.
+    private static func toneState(written: String, expected: String, display: String) -> PinyinState {
+        let w = Array(written), e = Array(expected)
+        guard w.count == e.count else { return .wrongTones(written: display) }
+        var missing = false
+        for (wc, ec) in zip(w, e) where wc != ec {
+            let plain = String(wc).folding(options: .diacriticInsensitive, locale: nil)
+            if String(wc) == plain { missing = true } else { return .wrongTones(written: display) }
+        }
+        return missing ? .missingTones : .correct
     }
 
     /// A run of tokens one edit away from `needle`'s letters (never an exact match).
