@@ -19,30 +19,42 @@ struct JIBIJIApp: App {
     }
 }
 
-/// Switches between the cover and the notebook. The flag lives in a view, not in the `App`,
-/// so the change between the two screens animates.
+/// Switches between the cover, the notebook's home, and a page. The screen lives in a view, not
+/// in the `App`, so the changes between them animate.
 private struct RootView: View {
+    enum Screen { case cover, home, page }
+
     let notebook: NotebookModel
-    @State private var notebookIsOpen = false
+    @State private var screen = Screen.cover
 
     var body: some View {
         ZStack {
-            if notebookIsOpen {
-                NotePageView(notebook: notebook, showCover: {
+            switch screen {
+            case .page:
+                NotePageView(notebook: notebook, showHome: {
                     notebook.saveAll()
-                    withAnimation(Theme.Motion.screen) { notebookIsOpen = false }
+                    withAnimation(Theme.Motion.screen) { screen = .home }
                 })
                 // Opacity only: the canvas and its tool bar need their final frame from the start.
                 .transition(.opacity)
-            } else {
+            case .home:
+                HomeView(notebook: notebook, openPage: { id in
+                    notebook.openPage(id)
+                    withAnimation(Theme.Motion.screen) { screen = .page }
+                }, showCover: {
+                    notebook.saveAll()
+                    withAnimation(Theme.Motion.screen) { screen = .cover }
+                })
+                .transition(.opacity.combined(with: .scale(scale: 0.985)))
+            case .cover:
                 NotebookCoverView(isStill: notebook.usesTestNotebook) {
-                    withAnimation(Theme.Motion.screen) { notebookIsOpen = true }
+                    withAnimation(Theme.Motion.screen) { screen = .home }
                 }
                 // The cover runs its own dive into the page; this only fades what is left.
                 .transition(.opacity)
             }
         }
-        // Same surface as both screens, so nothing flashes while they cross over.
+        // Same surface as every screen, so nothing flashes while they cross over.
         .background(Theme.surface.ignoresSafeArea())
     }
 }

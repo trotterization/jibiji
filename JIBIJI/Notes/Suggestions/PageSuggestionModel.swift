@@ -357,6 +357,23 @@ final class PageSuggestionModel {
         }
     }
 
+    /// Records where a replacement moved and the IDs its moved strokes now have.
+    func updateReplacement(_ id: UUID, anchor: CGRect, recovery: InkReplacement) -> Bool {
+        guard canSave, let index = annotations.firstIndex(where: { $0.id == id }) else { return false }
+        var updated = annotations
+        updated[index].anchor = anchor
+        updated[index].replacement = recovery
+        do {
+            try store.save(updated, pageID: pageID)
+            annotations = updated
+            storageProblem = nil
+            return true
+        } catch {
+            storageProblem = "The change couldn't be saved. The replacement stays where it was."
+            return false
+        }
+    }
+
     /// Splits replacement text into card fields. The English the student approved (or typed) wins;
     /// the dictionary gloss is used only when the text is the unedited suggestion without English.
     static func replacementParts(_ text: String, for item: PendingSuggestion) -> (hanzi: String?, pinyin: String?, gloss: String?) {

@@ -36,6 +36,8 @@ final class NotePageModel {
     @ObservationIgnored private let autosaveDelay: Duration
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private var hasUnsavedChanges = false
+    /// Ink not written to disk yet.
+    var hasPendingChanges: Bool { hasUnsavedChanges }
 
     init(
         pageID: String,
@@ -122,7 +124,7 @@ final class NotePageModel {
         let originals = indices.map { drawing.strokes[$0] }
         let sourceBounds = originals.dropFirst().reduce(originals[0].renderBounds) { $0.union($1.renderBounds) }
         guard let replacement = CleanHandwriting.drawing(text: cleanText, in: sourceBounds,
-                                                        color: originals[0].ink.color) else {
+                                                        pen: .matching(originals)) else {
             notice = "This replacement couldn't be drawn. Your writing is unchanged."
             return false
         }
@@ -161,6 +163,50 @@ final class NotePageModel {
         guard let note = suggestions.annotations.first(where: { $0.id == id }), let replacement = note.replacement else { return }
         drawingDidChange(PKDrawing(strokes: drawing.strokes.filter { !replacement.replacementStrokeIDs.contains(InkSelection.identity($0)) }))
         saveIfNeeded()
+    }
+
+    /// Moves or resizes a replacement. Points move; widths stay, so it keeps matching the pen.
+    /// Earlier stroke IDs stay on the receipt, so native undo, Restore, and visibility keep working.
+    @discardableResult
+    func adjustReplacement(_ noteID: UUID, by transform: CGAffineTransform) -> Bool {
+        guard isEditable, transform != .identity,
+              let note = suggestions.annotations.first(where: { $0.id == noteID }),
+              var recovery = note.replacement else { return false }
+        let indices = drawing.strokes.indices.filter { recovery.replacementStrokeIDs.contains(InkSelection.identity(drawing.strokes[$0])) }
+        guard !indices.isEmpty else { return false }
+        let moved = indices.map { index -> PKStroke in
+            let stroke = drawing.strokes[index]
+            // Older replacements are masked glyph outlines: move those as a whole.
+            guard stroke.mask == nil else {
+                var copy = stroke
+                copy.transform = stroke.transform.concatenating(transform)
+                return copy
+            }
+            let full = stroke.transform.concatenating(transform)
+            let points = stroke.path.map { point in
+                PKStrokePoint(location: point.location.applying(full), timeOffset: point.timeOffset, size: point.size,
+                              opacity: point.opacity, force: point.force, azimuth: point.azimuth, altitude: point.altitude)
+            }
+            return PKStroke(ink: stroke.ink, path: PKStrokePath(controlPoints: points, creationDate: stroke.path.creationDate))
+        }
+        guard let canonical = try? PKDrawing(data: PKDrawing(strokes: moved).dataRepresentation()),
+              canonical.strokes.count == moved.count else { return false }
+        recovery.replacementStrokeIDs.formUnion(canonical.strokes.map(InkSelection.identity))
+        let bounds = canonical.strokes.dropFirst().reduce(canonical.strokes[0].renderBounds) { $0.union($1.renderBounds) }
+        guard suggestions.updateReplacement(noteID, anchor: bounds, recovery: recovery) else { return false }
+        var strokes = drawing.strokes
+        for (index, stroke) in zip(indices, canonical.strokes) { strokes[index] = stroke }
+        drawingDidChange(PKDrawing(strokes: strokes))
+        saveIfNeeded()
+        return true
+    }
+
+    /// Where a replacement's ink is now, in page coordinates.
+    func replacementBounds(_ note: AcceptedAnnotation) -> CGRect? {
+        guard let ids = note.replacement?.replacementStrokeIDs else { return nil }
+        let strokes = drawing.strokes.filter { ids.contains(InkSelection.identity($0)) }
+        guard let first = strokes.first else { return nil }
+        return strokes.dropFirst().reduce(first.renderBounds) { $0.union($1.renderBounds) }
     }
 
     var latestVisibleReplacement: AcceptedAnnotation? {

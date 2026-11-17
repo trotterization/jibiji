@@ -17,6 +17,9 @@ final class InlineSuggestionDeviceUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["openNotebook"].waitForExistence(timeout: 10))
         app.buttons["openNotebook"].tap()
+        let resume = app.buttons["continueWriting"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 10), "The home page didn't appear")
+        resume.tap()
         // Restore an accepted replacement from an interrupted previous replay.
         if app.buttons["undoSuggestion"].exists { app.buttons["undoSuggestion"].tap() }
         let originalStatus = app.staticTexts["pageStatus"].label

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The jibiji pen case: a frosted bar under the page with undo and redo, five tools, the logo's
-/// inks, and three weights. The selected tool's tip shows the ink it writes with.
+/// inks plus any the student mixes, and three weights. The selected tool's tip shows the ink it writes with.
 ///
 /// `.quick` is the same set without history or settings, shown where Apple Pencil asks for it.
 struct InkToolBar: View {
@@ -51,6 +51,7 @@ struct InkToolBar: View {
         .fixedSize()
         .animation(Theme.Motion.quick, value: tools.tool)
         .animation(Theme.Motion.quick, value: tools.ink)
+        .animation(Theme.Motion.quick, value: tools.palette)
     }
 
     // MARK: Tools
@@ -114,26 +115,72 @@ struct InkToolBar: View {
             }
             weightButtons(enabled: tools.eraserMode == .partial)
         } else {
-            ForEach(InkTools.Ink.allCases) { ink in
+            ForEach(tools.palette) { ink in
                 let selected = tools.ink == ink
                 Button {
-                    tools.ink = ink
-                    if !tools.tool.inks { tools.tool = .pen }
+                    tools.use(ink, keep: false)
                 } label: {
-                    Circle()
-                        .fill(ink.color)
-                        .frame(width: selected ? 20 : 18, height: selected ? 20 : 18)
-                        .padding(4)
-                        .overlay(Circle().strokeBorder(Color.primary.opacity(selected ? 0.8 : 0), lineWidth: 1.5))
-                        .frame(width: 34, height: 40)
-                        .contentShape(Rectangle())
+                    swatch(ink, selected: selected)
                 }
                 .buttonStyle(PressScaleButtonStyle(scale: 0.85))
+                .contextMenu {
+                    if ink != .ink {
+                        Button("Remove from Bar", systemImage: "minus.circle", role: .destructive) {
+                            withAnimation(Theme.Motion.quick) { tools.remove(ink) }
+                        }
+                    }
+                }
                 .accessibilityLabel("\(ink.name) ink")
                 .accessibilityAddTraits(selected ? .isSelected : [])
+                .transition(.scale.combined(with: .opacity))
             }
+            // An ink mixed in the picker but not kept yet: one tap puts it on the bar.
+            if !tools.palette.contains(tools.ink) {
+                Button {
+                    withAnimation(Theme.Motion.quick) { tools.use(tools.ink, keep: true) }
+                } label: {
+                    swatch(tools.ink, selected: true)
+                        .overlay(alignment: .topTrailing) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 8, weight: .heavy))
+                                .foregroundStyle(Color(uiColor: .systemBackground))
+                                .frame(width: 14, height: 14)
+                                .background(Color.primary, in: Circle())
+                                .offset(x: -2, y: 6)
+                        }
+                }
+                .buttonStyle(PressScaleButtonStyle(scale: 0.85))
+                .disabled(!tools.canAddInk)
+                .accessibilityLabel("Add \(tools.ink.name) to the bar")
+                .accessibilityIdentifier("keepInk")
+                .transition(.scale.combined(with: .opacity))
+            }
+            mixer
             weightButtons(enabled: tools.tool.inks)
         }
+    }
+
+    private func swatch(_ ink: InkTools.Ink, selected: Bool) -> some View {
+        Circle()
+            .fill(ink.color)
+            .frame(width: selected ? 20 : 18, height: selected ? 20 : 18)
+            .overlay(Circle().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
+            .padding(4)
+            .overlay(Circle().strokeBorder(Color.primary.opacity(selected ? 0.8 : 0), lineWidth: 1.5))
+            .frame(width: 34, height: 40)
+            .contentShape(Rectangle())
+    }
+
+    /// The system color picker: grid, spectrum, sliders, and eyedropper. A mixed ink writes at once;
+    /// it goes on the bar only when kept.
+    private var mixer: some View {
+        ColorPicker("Mix an ink", selection: Binding(
+            get: { Color(uiColor: tools.ink.uiColor) },
+            set: { tools.use(InkTools.Ink(color: UIColor($0)), keep: false) }
+        ), supportsOpacity: false)
+        .labelsHidden()
+        .frame(width: 34, height: 40)
+        .accessibilityIdentifier("mixInk")
     }
 
     private func weightButtons(enabled: Bool) -> some View {
@@ -162,8 +209,9 @@ struct InkToolBar: View {
     /// For narrow windows: inks and weights folded into one control.
     private var inkMenu: some View {
         Menu {
-            Picker("Ink", selection: Bindable(tools).ink) {
-                ForEach(InkTools.Ink.allCases) { Text($0.name).tag($0) }
+            Picker("Ink", selection: Binding(get: { tools.ink }, set: { tools.use($0, keep: false) })) {
+                ForEach(tools.palette) { Text($0.name).tag($0) }
+                if !tools.palette.contains(tools.ink) { Text(tools.ink.name).tag(tools.ink) }
             }
             Picker("Weight", selection: Binding(
                 get: { tools.weight(for: tools.tool) },
@@ -182,6 +230,17 @@ struct InkToolBar: View {
     private var settingsMenu: some View {
         Menu {
             Toggle("Draw with finger", isOn: Bindable(tools).allowsFingerDrawing)
+            Section("Inks") {
+                if tools.ink != .ink, tools.palette.contains(tools.ink) {
+                    Button("Remove \(tools.ink.name) from Bar", systemImage: "minus.circle", role: .destructive) {
+                        withAnimation(Theme.Motion.quick) { tools.remove(tools.ink) }
+                    }
+                }
+                Button("Reset Inks", systemImage: "arrow.counterclockwise") {
+                    withAnimation(Theme.Motion.quick) { tools.resetPalette() }
+                }
+                .disabled(tools.palette == InkTools.Ink.builtIn)
+            }
         } label: {
             Label("Pen settings", systemImage: "ellipsis")
         }

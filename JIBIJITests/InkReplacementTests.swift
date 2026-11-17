@@ -9,11 +9,19 @@ import UIKit
 struct InkReplacementTests {
     private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("InkReplacement-\(UUID().uuidString)") }
 
-    @Test func cleanHandwritingRendersAsVisibleNativeInkAndKeepsGlyphHoles() throws {
+    @Test func cleanHandwritingIsThinNativeInkInTheStudentsPen() throws {
         #expect(CleanHandwriting.font(size: 30).fontName == "LXGWWenKaiTC-Regular")
-        let ink = try #require(CleanHandwriting.drawing(text: "牛我", in: CGRect(x: 40, y: 50, width: 180, height: 90)))
-        #expect(ink.strokes.count == 2)
-        #expect(ink.strokes.allSatisfy { $0.mask != nil })
+        let target = CGRect(x: 40, y: 50, width: 180, height: 90)
+        let pen = CleanHandwriting.Pen(inkType: .pen, color: .black, width: 2.5)
+        let ink = try #require(CleanHandwriting.drawing(text: "牛我", in: target, pen: pen))
+        // Several strokes per character, drawn along the middle of the glyph, not filled outlines.
+        #expect(ink.strokes.count >= 6)
+        // Roughly a stroke per pen stroke (牛 4, 我 7), not dozens of junction fragments.
+        #expect(ink.strokes.count <= 22, "\(ink.strokes.count) strokes")
+        #expect(ink.strokes.allSatisfy { $0.mask == nil && $0.ink.inkType == .pen })
+        #expect(ink.strokes.allSatisfy { $0.path.allSatisfy { abs($0.size.width - 2.5) < 0.01 } })
+        #expect(ink.bounds.insetBy(dx: -4, dy: -4).contains(target.insetBy(dx: 12, dy: 12)))
+        #expect(target.insetBy(dx: -6, dy: -6).contains(ink.bounds))
         var image = UIImage()
         UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
             image = ink.image(from: CGRect(x: 20, y: 30, width: 230, height: 130), scale: 1)
@@ -31,8 +39,8 @@ struct InkReplacementTests {
         context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
         let bytes = try #require(context.data?.assumingMemoryBound(to: UInt8.self))
         let dark = (0..<(cg.width * cg.height)).filter { bytes[$0 * 4] < 100 }.count
-        #expect(dark > 100, "The glyph mask must actually render ink, not just store stroke metadata")
-        #expect(dark < cg.width * cg.height / 2, "Ink must be clipped to glyphs rather than a solid bar")
+        #expect(dark > 100, "The strokes must actually render ink, not just store stroke metadata")
+        #expect(dark < cg.width * cg.height / 8, "Thin pen lines, not filled glyphs")
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("jibiji-clean-ink-preview.png")
         try composite.pngData()?.write(to: file)
         print("LOCAL CLEAN INK PREVIEW: \(file.path)")
@@ -62,6 +70,51 @@ struct InkReplacementTests {
         #expect(reopened.restoreOriginal(receipt.id))
         #expect(reopened.drawing.strokes.map(InkSelection.identity) == (initial.strokes + later.strokes).map(InkSelection.identity))
         #expect(reopened.latestVisibleReplacement == nil)
+    }
+
+    @Test func penMatchesTheStrokesItReplaces() {
+        let fine = SyntheticInk.stroke(through: [CGPoint(x: 0, y: 0), CGPoint(x: 40, y: 0)], width: 1.8)
+        let pen = CleanHandwriting.Pen.matching([fine, fine, SyntheticInk.stroke(through: [CGPoint(x: 0, y: 9), CGPoint(x: 9, y: 9)], width: 9)])
+        #expect(abs(pen.width - 1.8) < 0.01)
+        let marker = PKStroke(ink: PKInk(.marker, color: .red), path: fine.path)
+        #expect(CleanHandwriting.Pen.matching([marker]).inkType == .pen)
+    }
+
+    @Test func movedAndResizedReplacementKeepsItsPenAndCanStillBeRestored() async throws {
+        let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
+        let store = NoteStore(directory: folder)
+        let original = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 80, y: 160))
+        let neighbor = SyntheticInk.drawing(writing: "人", origin: CGPoint(x: 400, y: 160))
+        let initial = PKDrawing(strokes: original.strokes + neighbor.strokes)
+        let page = NotePageModel(pageID: "page-1", store: store,
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["牛"])]))
+        page.drawingDidChange(initial)
+        page.suggestions.request(for: page.drawing); await page.suggestions.task?.value
+        let item = try #require(page.suggestions.pending.first)
+        #expect(page.replaceSuggestion(item.id, with: "牛"))
+        let note = try #require(page.latestVisibleReplacement)
+        let before = try #require(page.replacementBounds(note))
+        let widths = Set(page.drawing.strokes.prefix(while: { !neighbor.strokes.map(InkSelection.identity).contains(InkSelection.identity($0)) })
+            .flatMap { $0.path.map { ($0.size.width * 100).rounded() } })
+
+        #expect(page.adjustReplacement(note.id, by: CGAffineTransform(translationX: 30, y: -20)))
+        let pivot = CGPoint(x: before.minX + 30, y: before.midY - 20)
+        #expect(page.adjustReplacement(note.id, by: CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
+            .concatenating(CGAffineTransform(scaleX: 0.5, y: 0.5)).concatenating(CGAffineTransform(translationX: pivot.x, y: pivot.y))))
+        let after = try #require(page.latestVisibleReplacement.flatMap(page.replacementBounds))
+        #expect(abs(after.minX - (before.minX + 30)) < 4)
+        #expect(after.height < before.height * 0.7)
+        // Same pen width after resizing, and the neighbor is untouched.
+        let movedWidths = Set(page.drawing.strokes.filter { !neighbor.strokes.map(InkSelection.identity).contains(InkSelection.identity($0)) }
+            .flatMap { $0.path.map { ($0.size.width * 100).rounded() } })
+        #expect(movedWidths == widths)
+        #expect(page.drawing.strokes.suffix(neighbor.strokes.count).map(InkSelection.identity) == neighbor.strokes.map(InkSelection.identity))
+
+        let reopened = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder))
+        let receipt = try #require(reopened.latestVisibleReplacement)
+        #expect(receipt.anchor.minX > before.minX + 20)
+        #expect(reopened.restoreOriginal(receipt.id))
+        #expect(reopened.drawing.strokes.map(InkSelection.identity) == initial.strokes.map(InkSelection.identity))
     }
 
     @Test func deletionRemovesOnlyTheReplacementAndPersists() async throws {

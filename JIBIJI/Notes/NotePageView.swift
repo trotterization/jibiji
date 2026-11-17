@@ -1,10 +1,10 @@
 import PencilKit
 import SwiftUI
 
-/// The local notebook: pick a page from the Pages menu, add pages, write with Apple Pencil.
+/// A notebook page: write with Apple Pencil, switch pages from the Pages menu, go back to the home page.
 struct NotePageView: View {
     @Bindable var notebook: NotebookModel
-    var showCover: (() -> Void)? = nil
+    var showHome: (() -> Void)? = nil
     @State private var canvas = CanvasController()
     @State private var showsRecognitionCheck = false
     @State private var showsCards = false
@@ -129,19 +129,24 @@ struct NotePageView: View {
     /// The floating bar above the page: where you are on the left, what you can do on the right.
     private var bar: some View {
         HStack(spacing: 4) {
-            if let showCover {
-                Button(action: showCover) {
-                    Text("jibiji")
-                        .font(.system(size: 19, weight: .semibold, design: .rounded))
-                        .tracking(-0.6)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
-                        .frame(height: 38)
-                        .contentShape(Rectangle())
+            if let showHome {
+                Button(action: showHome) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text("jibiji")
+                            .font(.system(size: 19, weight: .semibold, design: .rounded))
+                            .tracking(-0.6)
+                            .foregroundStyle(.primary)
+                    }
+                    .padding(.horizontal, 6)
+                    .frame(height: 38)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(PressScaleButtonStyle())
-                .accessibilityLabel("Cover")
-                .accessibilityIdentifier("showCover")
+                .accessibilityLabel("Home")
+                .accessibilityIdentifier("showHome")
                 Rectangle()
                     .fill(Color.primary.opacity(0.14))
                     .frame(width: 1, height: 18)

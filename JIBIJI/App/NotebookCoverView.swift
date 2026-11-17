@@ -63,22 +63,6 @@ struct NotebookCoverView: View {
         let drift = still || opening ? 0 : sin(time * 0.9)
 
         return VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                ForEach(Self.dotColors.indices, id: \.self) { index in
-                    Circle().fill(Self.dotColors[index])
-                        .scaleEffect(appeared ? 1 : 0)
-                        .animation(.spring(duration: 0.5, bounce: 0.45).delay(0.35 + Double(index) * 0.09), value: appeared)
-                }
-            }
-            .frame(width: 42, height: 6)
-            .padding(.bottom, 18)
-            .leaves(opening)
-            Text("A LITTLE SPACE TO LEARN")
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .tracking(2.5)
-                .foregroundStyle(ink.opacity(0.5))
-                .rises(after: 0.35, distance: 6)
-                .leaves(opening)
 
             Image("JibijiCoverTile")
                 .resizable()

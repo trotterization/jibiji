@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Suggestions sit right under the line they read. One tap on Replace swaps that line's strokes
 /// for clean handwriting in the same place; the result is ordinary ink. Right after a replacement,
-/// a small chip offers Restore and Delete until you write again. Empty areas let Pencil and
+/// a small chip offers move, size, Restore, and Delete until you write again. Empty areas let Pencil and
 /// touches through to the canvas.
 struct SuggestionOverlay: View {
     let page: NotePageModel
@@ -16,6 +16,8 @@ struct SuggestionOverlay: View {
     /// The replacement just made, and the page's stroke count right after it. The chip under it
     /// stays until the page changes some other way.
     @State private var recent: (id: UUID, strokes: Int)?
+    /// How far the replacement is being dragged, in screen points.
+    @State private var drag: CGSize = .zero
 
     private var suggestions: PageSuggestionModel { page.suggestions }
 
@@ -40,7 +42,18 @@ struct SuggestionOverlay: View {
                 }
 
                 if let note = recentReplacement {
+                    let ink = canvas.visibleRect(forPageRect: page.replacementBounds(note) ?? note.anchor)
+                    let moved = ink.offsetBy(dx: drag.width, dy: drag.height)
+                    if drag != .zero {
+                        SourceOutline()
+                            .frame(width: moved.width + 12, height: moved.height + 12)
+                            .offset(x: moved.minX - 6, y: moved.minY - 6)
+                    }
                     ReplacedChip(
+                        resize: { factor in resize(note, by: factor) },
+                        drag: DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                            .onChanged { drag = $0.translation }
+                            .onEnded { value in move(note, by: value.translation) },
                         restore: {
                             if page.restoreOriginal(note.id) { canvas.applyDrawing(page.drawing, actionName: "Restore handwriting") }
                             recent = nil
@@ -51,7 +64,7 @@ struct SuggestionOverlay: View {
                             recent = nil
                         }
                     )
-                    .position(in: proxy.size, below: canvas.visibleRect(forPageRect: note.anchor))
+                    .position(in: proxy.size, below: moved)
                     .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .topLeading)))
                 }
 
@@ -98,6 +111,27 @@ struct SuggestionOverlay: View {
               let note = page.latestVisibleReplacement else { return }
         canvas.applyDrawing(page.drawing)
         recent = (note.id, page.drawing.strokes.count)
+    }
+
+    /// Scales around the left edge's middle, so the text stays on its line.
+    private func resize(_ note: AcceptedAnnotation, by factor: CGFloat) {
+        guard let bounds = page.replacementBounds(note) else { return }
+        let pivot = CGPoint(x: bounds.minX, y: bounds.midY)
+        let transform = CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
+            .concatenating(CGAffineTransform(scaleX: factor, y: factor))
+            .concatenating(CGAffineTransform(translationX: pivot.x, y: pivot.y))
+        if page.adjustReplacement(note.id, by: transform) {
+            canvas.applyDrawing(page.drawing, actionName: "Resize replacement")
+        }
+    }
+
+    private func move(_ note: AcceptedAnnotation, by translation: CGSize) {
+        defer { drag = .zero }
+        let scale = max(canvas.zoomScale, 0.01)
+        let transform = CGAffineTransform(translationX: translation.width / scale, y: translation.height / scale)
+        if page.adjustReplacement(note.id, by: transform) {
+            canvas.applyDrawing(page.drawing, actionName: "Move replacement")
+        }
     }
 
     private var recentReplacement: AcceptedAnnotation? {
@@ -191,22 +225,38 @@ private struct PendingChip: View {
     }
 }
 
-/// Shown under a replacement right after it is made.
-private struct ReplacedChip: View {
+/// Shown under a replacement right after it is made: drag the grip to move it, − and + to size
+/// it to the writing around it, or undo the replacement.
+private struct ReplacedChip<Drag: Gesture>: View {
+    let resize: (CGFloat) -> Void
+    let drag: Drag
     let restore: () -> Void
     let delete: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 12, weight: .bold))
+        HStack(spacing: 2) {
+            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.primary)
-                .padding(.leading, 10)
-                .accessibilityHidden(true)
-            Text("Replaced")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.trailing, 6)
+                .frame(width: 40, height: 36)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(Rectangle())
+                .gesture(drag)
+                .accessibilityLabel("Move replacement")
+                .accessibilityHint("Drag to move the replaced writing.")
+                .accessibilityIdentifier("moveReplacement")
+            Button("Smaller", systemImage: "minus") { resize(0.85) }
+                .labelStyle(.iconOnly)
+                .buttonStyle(SizeButtonStyle())
+                .accessibilityIdentifier("shrinkReplacement")
+            Button("Larger", systemImage: "plus") { resize(1 / 0.85) }
+                .labelStyle(.iconOnly)
+                .buttonStyle(SizeButtonStyle())
+                .accessibilityIdentifier("growReplacement")
+            Rectangle()
+                .fill(Color.primary.opacity(0.12))
+                .frame(width: 1, height: 20)
+                .padding(.horizontal, 4)
             Button("Restore", action: restore)
                 .buttonStyle(QuietButtonStyle())
                 .accessibilityLabel("Restore original handwriting")
@@ -219,6 +269,18 @@ private struct ReplacedChip: View {
         .padding(4)
         .panel(radius: 14)
         .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+    }
+}
+
+private struct SizeButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.primary)
+            .frame(width: 36, height: 36)
+            .background(Color.primary.opacity(configuration.isPressed ? 0.1 : 0), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+            .scaleEffect(configuration.isPressed ? 0.9 : 1)
     }
 }
 

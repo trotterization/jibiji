@@ -18,21 +18,28 @@ final class InkReplacementUITests: XCTestCase {
         XCTAssertTrue(app.buttons["牛"].waitForExistence(timeout: 5))
         app.buttons["牛"].tap()
         app.buttons["replaceHandwriting"].tap()
-        waitStatus("1 stroke · Saved", app)
+        // Clean handwriting is written as several thin pen strokes.
+        let replaced = waitReplaced(app)
         XCTAssertTrue(app.buttons["deleteReplacement"].exists)
         XCTAssertTrue(app.buttons["restoreReplacementInline"].exists, "Restore should sit right under the replacement")
         XCTAssertFalse(app.buttons["replaceHandwriting"].exists)
         app.buttons["Undo"].firstMatch.tap()
         waitStatus("3 strokes · Saved", app)
         app.buttons["Redo"].firstMatch.tap()
-        waitStatus("1 stroke · Saved", app)
+        waitStatus(replaced, app)
+        // Sizing keeps the same strokes and the chip, and is one undo step.
+        XCTAssertTrue(app.buttons["growReplacement"].waitForExistence(timeout: 5))
+        app.buttons["growReplacement"].tap()
+        app.buttons["shrinkReplacement"].tap()
+        waitStatus(replaced, app)
+        XCTAssertTrue(app.buttons["restoreReplacementInline"].exists)
         app.buttons["deleteReplacement"].tap()
         waitStatus("0 strokes · Saved", app)
         app.buttons["Undo"].firstMatch.tap()
-        waitStatus("1 stroke · Saved", app)
+        waitStatus(replaced, app)
         app.terminate()
         app = launch(reset: false)
-        waitStatus("1 stroke · Saved", app)
+        waitStatus(replaced, app)
         XCTAssertTrue(app.buttons["undoSuggestion"].waitForExistence(timeout: 5))
         app.buttons["undoSuggestion"].tap()
         waitStatus("3 strokes · Saved", app)
@@ -45,11 +52,22 @@ final class InkReplacementUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["openNotebook"].waitForExistence(timeout: 10))
         app.buttons["openNotebook"].tap()
+        let resume = app.buttons["continueWriting"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 10), "The home page didn't appear")
+        resume.tap()
         return app
     }
 
     @MainActor private func draw(_ canvas: XCUIElement, from: CGVector, to: CGVector) {
         canvas.coordinate(withNormalizedOffset: from).press(forDuration: 0.1, thenDragTo: canvas.coordinate(withNormalizedOffset: to))
+    }
+
+    /// Waits for the page to save after a replacement and returns its status line.
+    @MainActor private func waitReplaced(_ app: XCUIApplication) -> String {
+        let match = NSPredicate(format: "label ENDSWITH %@ AND NOT (label BEGINSWITH %@)", "strokes · Saved", "3 strokes")
+        expectation(for: match, evaluatedWith: app.staticTexts["pageStatus"])
+        waitForExpectations(timeout: 10)
+        return app.staticTexts["pageStatus"].label
     }
 
     @MainActor private func waitStatus(_ text: String, _ app: XCUIApplication) {

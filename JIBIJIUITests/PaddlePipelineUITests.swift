@@ -8,6 +8,9 @@ final class PaddlePipelineUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["openNotebook"].waitForExistence(timeout: 10))
         app.buttons["openNotebook"].tap()
+        let resume = app.buttons["continueWriting"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 10), "The home page didn't appear")
+        resume.tap()
         XCTAssertTrue(app.buttons["Check recognition"].waitForExistence(timeout: 10))
         app.buttons["Check recognition"].tap()
         let compare = app.buttons["comparePaddlePipeline"]

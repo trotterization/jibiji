@@ -169,6 +169,9 @@ final class NotePageUITests: XCTestCase {
         let open = app.buttons["openNotebook"]
         XCTAssertTrue(open.waitForExistence(timeout: 10), "The notebook cover didn't appear")
         open.tap()
+        let resume = app.buttons["continueWriting"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 10), "The home page didn't appear")
+        resume.tap()
         let pen = app.buttons["Pen"].firstMatch
         XCTAssertTrue(pen.waitForExistence(timeout: 10), "The tool bar isn't showing", file: file, line: line)
         XCTAssertTrue(pen.isSelected, "A test notebook should start with the pen", file: file, line: line)
