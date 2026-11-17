@@ -25,7 +25,7 @@ struct StarterVocabularyTests {
         let proposal = try #require(vocabulary.proposal(forRecognizedText: "负责 responsible for"))
         #expect(proposal.hanziAlreadyWritten)
         var pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "", proposal: proposal)
-        #expect(pending.annotationText == "to be responsible for")
+        #expect(pending.annotationText == "(fùzé) · to be responsible for")
         pending.selectedIndex = 1
         // An alternative is a different word, so it carries its own Hanzi even though 负责 was written.
         #expect(pending.annotationText == "承担 · (chéngdān) · to bear responsibility for")
@@ -39,7 +39,7 @@ struct StarterVocabularyTests {
     }
 
     @Test func abstainsWhenNothingIsLeftToAddOrNothingMatches() {
-        #expect(vocabulary.proposal(forRecognizedText: "负责 to be responsible for") == nil)
+        #expect(vocabulary.proposal(forRecognizedText: "负责 fuze to be responsible for") == nil)
         #expect(vocabulary.proposal(forRecognizedText: "") == nil)
         #expect(vocabulary.proposal(forRecognizedText: "hello world") == nil)
         #expect(vocabulary.proposal(forRecognizedText: "你好") == nil)
@@ -94,6 +94,47 @@ struct StarterVocabularyTests {
         #expect(proposal.glossAlreadyWritten)
         let pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "", proposal: proposal)
         #expect(pending.annotationText == "负责")
+    }
+
+    @Test(arguments: ["好像", "农夫市集"])
+    func hanziAloneOffersMissingPinyinAndEnglish(_ text: String) throws {
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: text))
+        let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: text, proposal: proposal)
+        #expect(proposal.hanziAlreadyWritten)
+        #expect(!proposal.pinyinAlreadyWritten)
+        #expect(!proposal.glossAlreadyWritten)
+        #expect(item.annotationText.contains(proposal.candidates[0].pinyin))
+        #expect(item.annotationText.contains(proposal.candidates[0].gloss))
+        #expect(item.replacementText.hasPrefix(text + " · "))
+    }
+
+    @Test(arguments: ["好像 hao xiang", "农夫市集 nong fu shi ji"])
+    func untonedPinyinIsPreservedAndOnlyEnglishIsMissing(_ text: String) throws {
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: text))
+        let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: text, proposal: proposal)
+        #expect(proposal.pinyinAlreadyWritten)
+        #expect(item.annotationText == proposal.candidates[0].gloss)
+        #expect(item.replacementText.contains(try #require(proposal.writtenPinyin)))
+    }
+
+    @Test func existingEnglishIsPreservedWhenPinyinIsMissing() throws {
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: "好像 to look like"))
+        let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "好像 to look like", proposal: proposal)
+        #expect(item.annotationText == "(hǎoxiàng)")
+        #expect(item.replacementText == "好像 · hǎoxiàng · to look like")
+    }
+
+    @Test func uncertainHanziDoesNotAcquireAMarketMeaning() {
+        #expect(vocabulary.proposal(forRecognizedText: "农夫试剂") == nil)
+        #expect(vocabulary.proposal(forRecognizedText: "农夫试剂 nong fu shi ji") == nil)
+        #expect(vocabulary.proposal(forRecognizedText: "好像 农夫市集") == nil)
+    }
+
+    @Test func replacementPreservesWrittenEnglishPunctuation() throws {
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: "好 hao xiang (to look like)"))
+        #expect(proposal.writtenGloss == "(to look like)")
+        let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "", proposal: proposal)
+        #expect(item.replacementText == "好像 · hao xiang · (to look like)")
     }
 }
 
@@ -155,6 +196,28 @@ final class PageSuggestionModelTests {
             model.accept(item.id)
             #expect(model.annotations.first?.text == "太人")
         }
+    }
+
+    @Test func uncertainWordExplainsNoMatchOrOffersOnlyObservedAlternatives() async throws {
+        let uncertain = RecognizedLine(text: "农夫试剂", bounds: line.bounds, readings: ["农夫试剂"])
+        let noMatch = model(FixedReader(lines: [uncertain]))
+        await request(noMatch)
+        #expect(noMatch.pending.isEmpty)
+        #expect(noMatch.status != .idle)
+        var alternative = uncertain
+        alternative.readings.append("农夫市集")
+        let choices = model(FixedReader(lines: [alternative]))
+        await request(choices)
+        let item = try #require(choices.pending.first)
+        #expect(item.proposal.candidates.map(\.hanzi) == ["农夫试剂", "农夫市集"])
+        #expect(item.proposal.candidates.allSatisfy { $0.gloss.isEmpty && $0.pinyin.isEmpty })
+    }
+
+    @Test func confirmedPinyinDoesNotRequestARedundantInkEdit() async {
+        let confirmed = RecognizedLine(text: "农 nong farmer", bounds: line.bounds, readings: ["农 nong farmer", "农 nóng farmer"])
+        let suggestions = model(FixedReader(lines: [confirmed]))
+        await request(suggestions)
+        #expect(suggestions.pending.isEmpty)
     }
 
     @Test func emptyInkNoMatchAndFailureLeaveNothingPendingAndNeverThrowAway() async {

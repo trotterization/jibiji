@@ -117,11 +117,11 @@ struct SuggestionReviewView: View {
                                         ForEach(Array(item.proposal.candidates.enumerated()), id: \.offset) { index, candidate in
                                             Button(candidate.hanzi) {
                                                 page.suggestions.select(index, for: item.id)
-                                                replacement = candidate.hanzi
+                                                replacement = page.suggestions.pending.first { $0.id == item.id }?.replacementText ?? candidate.hanzi
                                             }
                                             .font(Font(CleanHandwriting.font(size: 28)))
                                             .padding(.horizontal, 16).frame(minHeight: 48)
-                                            .background(replacement == candidate.hanzi ? Color.teal.opacity(0.18) : Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+                                            .background(item.selectedIndex == index ? Color.teal.opacity(0.18) : Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
                                         }
                                     }
                                 }
@@ -136,7 +136,7 @@ struct SuggestionReviewView: View {
                         }
                     }
                     .padding(24)
-                    .task(id: item.id) { replacement = item.candidate.hanzi }
+                    .task(id: item.id) { replacement = item.replacementText }
                 }
             }
             .background(Color(uiColor: .systemGroupedBackground))

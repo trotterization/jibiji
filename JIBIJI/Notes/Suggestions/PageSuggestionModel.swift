@@ -12,6 +12,10 @@ struct RecognizedLine: Sendable, Equatable {
     var sourceText: String? = nil
     /// Image-recognition readings for user confirmation, not dictionary meanings.
     var readings: [String] = []
+    var readingNeedsReview = false
+    var pinyinReadingConfirmed = false
+    /// Another reading confirms the written Pinyin: fix transcription, never the ink.
+    var pinyinTranscriptionCorrected = false
     var rawText: String { sourceText ?? text }
 }
 
@@ -39,7 +43,20 @@ struct PencilInkLineReader: InkLineReader {
     func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
         guard !drawing.strokes.isEmpty else { return [] }
         if UserDefaults.standard.bool(forKey: "JibijiUsePaddlePipeline") {
-            return try await PaddleTextPipeline.shared.lines(in: drawing)
+            let detected = try await PaddleTextPipeline.shared.lines(in: drawing)
+            var result: [RecognizedLine] = []
+            for var line in detected {
+                try Task.checkCancellation()
+                let indices = InkSelection.indices(in: drawing, bounds: line.bounds)
+                if !indices.isEmpty {
+                    let crop = PKDrawing(strokes: indices.map { drawing.strokes[$0] })
+                    let readings = (try? await VisionInkReader.shared.lineReadings(in: crop)) ?? []
+                    for text in readings where !line.readings.contains(text) { line.readings.append(text) }
+                }
+                result.append(line)
+            }
+            try Task.checkCancellation()
+            return result
         }
         // The simulator exposes English-only stroke recognition. Read rendered ink in
         // Chinese instead of interpreting Hanzi as English letters. Also works on older OSes.
@@ -59,7 +76,10 @@ struct PencilInkLineReader: InkLineReader {
             if let raw = text, !raw.isEmpty {
                 var text = raw
                 if mode == .suggestions { text = await HanziPrefixFallback.resolve(primary: raw, strokes: strokes) }
-                result.append(RecognizedLine(text: text, bounds: bounds, sourceText: text == raw ? nil : raw)) }
+                let readings = (try? await VisionInkReader.shared.lineReadings(in: PKDrawing(strokes: strokes))) ?? []
+                try Task.checkCancellation()
+                result.append(RecognizedLine(text: text, bounds: bounds, sourceText: text == raw ? nil : raw,
+                                             readings: readings)) }
         }
         return result
     }
@@ -96,8 +116,17 @@ struct PendingSuggestion: Identifiable, Equatable {
                 parts.append(candidate.hanzi)
             }
         }
+        if !proposal.pinyinAlreadyWritten { parts.append("(\(candidate.pinyin))") }
         if !proposal.glossAlreadyWritten { parts.append(candidate.gloss) }
         return parts.joined(separator: " · ")
+    }
+
+    /// Acceptance replaces the entire recognized region, including its written Pinyin and English.
+    var replacementText: String {
+        guard !candidate.pinyin.isEmpty || !candidate.gloss.isEmpty else { return candidate.hanzi }
+        let pinyin = selectedIndex == 0 ? proposal.writtenPinyin ?? candidate.pinyin : candidate.pinyin
+        let gloss = selectedIndex == 0 ? proposal.writtenGloss ?? candidate.gloss : candidate.gloss
+        return [candidate.hanzi, pinyin, gloss].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
 
@@ -137,7 +166,7 @@ struct AcceptedAnnotation: Codable, Identifiable, Equatable {
                 if result.hanzi != nil { result.ambiguous = true }
                 result.hanzi = part
             } else if let target, !target.isEmpty, StarterVocabulary.latinTokens(inner).joined() == target {
-                result.pinyin = knownPinyin
+                result.pinyin = knownPinyin.map { RecognitionCrossCheck.pinyinAgrees(inner, with: $0) ? $0 : inner }
             } else if !StarterVocabulary.hanzi(in: part).isEmpty {
                 result.ambiguous = true
             } else {
@@ -265,14 +294,19 @@ final class PageSuggestionModel {
         case .failure(let error):
             // Recognition trouble never blocks writing or touches strokes.
             status = .message(error is InkLineReaderError ? error.localizedDescription : "Suggestions aren't available right now. Keep writing.")
-        case .success(let lines):
+        case .success(let recognized):
+            let lines = RecognitionCrossCheck.resolve(recognized, vocabulary: vocabulary)
             pending = lines.compactMap { line in
                 let proposal: SuggestionProposal
+                var seen = Set<String>()
+                let readings = ([line.text] + line.readings).filter { !$0.isEmpty && seen.insert($0).inserted }
                 if let known = vocabulary.proposal(forRecognizedText: line.text) {
                     proposal = known
-                } else if !line.readings.isEmpty {
+                } else if !line.pinyinReadingConfirmed, !line.readings.isEmpty,
+                          readings.contains(where: { !StarterVocabulary.hanzi(in: $0).isEmpty }),
+                          readings.count > 1 || StarterVocabulary.hanzi(in: line.text).count == 1 {
                     proposal = SuggestionProposal(
-                        candidates: line.readings.map { SuggestionCandidate(hanzi: $0, pinyin: "", gloss: "") },
+                        candidates: readings.map { SuggestionCandidate(hanzi: $0, pinyin: "", gloss: "") },
                         hanziAlreadyWritten: false, glossAlreadyWritten: true)
                 } else { return nil }
                 let alreadyAccepted = annotations.contains { note in
@@ -328,11 +362,13 @@ final class PageSuggestionModel {
     func acceptReplacement(_ item: PendingSuggestion, text: String, bounds: CGRect, recovery: InkReplacement) -> Bool {
         guard canSave, item.revision == revision, pending.contains(where: { $0.id == item.id }) else { return false }
         let sameCandidate = text == item.candidate.hanzi
-        let note = AcceptedAnnotation(id: UUID(), text: text, edited: !sameCandidate, anchor: bounds,
-                                      recognizedText: item.recognizedText,
-                                      hanzi: StarterVocabulary.hanzi(in: text).isEmpty ? nil : text,
-                                      pinyin: sameCandidate && !item.candidate.pinyin.isEmpty ? item.candidate.pinyin : nil,
-                                      gloss: sameCandidate && !item.candidate.gloss.isEmpty ? item.candidate.gloss : nil,
+        let parsed = AcceptedAnnotation.parse(text, knownPinyin: item.candidate.pinyin)
+        let parsedGloss = parsed.ambiguous || parsed.glossParts.isEmpty ? nil : parsed.glossParts.joined(separator: " · ")
+        let note = AcceptedAnnotation(id: UUID(), text: text, edited: !sameCandidate && text != item.replacementText, anchor: bounds,
+                                      recognizedText: item.sourceText ?? item.recognizedText,
+                                      hanzi: parsed.ambiguous ? nil : parsed.hanzi,
+                                      pinyin: parsed.pinyin ?? (sameCandidate && !item.candidate.pinyin.isEmpty ? item.candidate.pinyin : nil),
+                                      gloss: parsedGloss ?? (sameCandidate && !item.candidate.gloss.isEmpty ? item.candidate.gloss : nil),
                                       replacement: recovery)
         do {
             try store.save(annotations + [note], pageID: pageID)

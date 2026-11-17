@@ -9,6 +9,28 @@ actor VisionInkReader {
     static let shared = VisionInkReader()
     private var cachedInk: Data?
     private var cachedLines: [RecognizedLine] = []
+    private var lineCache: [String: [String]] = [:]
+
+    /// A second opinion on the exact stroke group used by the native recognizer.
+    func lineReadings(in drawing: PKDrawing) async throws -> [String] {
+        let key = PageFlashcards.digest(of: drawing)
+        if let cached = lineCache[key] { return cached }
+        let lines = try await readCrop(drawing).sorted { $0.bounds.minX < $1.bounds.minX }
+        let primary = lines.map(\.text).joined(separator: " ")
+        var readings = primary.isEmpty ? [] : [primary]
+        for index in lines.indices {
+            for alternative in lines[index].readings {
+                var parts = lines.map(\.text)
+                parts[index] = alternative
+                let text = parts.joined(separator: " ")
+                if !readings.contains(text) { readings.append(text) }
+            }
+        }
+        try Task.checkCancellation()
+        if lineCache.count >= 32 { lineCache.removeAll() }
+        lineCache[key] = readings
+        return readings
+    }
 
     func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
         try Task.checkCancellation()
@@ -94,11 +116,6 @@ actor VisionInkReader {
                 var merged = lines[0]
                 for alternative in readings where !merged.readings.contains(alternative) {
                     merged.readings.append(alternative)
-                }
-                if StarterVocabulary.hanzi(in: merged.text).isEmpty && !StarterVocabulary.hanzi(in: reading).isEmpty {
-                    merged.readings.removeAll { $0 == reading }
-                    merged.readings.insert(reading, at: 0)
-                    merged.text = reading
                 }
                 return [merged]
             } else if lines.isEmpty {

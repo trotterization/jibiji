@@ -19,6 +19,10 @@ struct SuggestionProposal: Equatable, Sendable {
     var glossAlreadyWritten: Bool
     /// A strict prefix of the best match's Hanzi already written (e.g. 好 of 好像); only the rest is offered.
     var hanziPrefixWritten: String = ""
+    var pinyinAlreadyWritten = true
+    /// Exact written fields, retained when replacing the whole source line.
+    var writtenPinyin: String? = nil
+    var writtenGloss: String? = nil
 }
 
 /// A small, explicitly offline starter list used to prove the inline-suggestion flow.
@@ -45,6 +49,7 @@ struct StarterVocabulary: Sendable {
         Entry(hanzi: "虽然", pinyin: "suīrán", glosses: ["although"]),
         Entry(hanzi: "但是", pinyin: "dànshì", glosses: ["but", "however"]),
         Entry(hanzi: "好像", pinyin: "hǎoxiàng", glosses: ["to seem like; to look like", "to seem like", "to look like"]),
+        Entry(hanzi: "农夫市集", pinyin: "nóngfū shìjí", glosses: ["farmers' market"]),
     ])
 
     var entries: [Entry]
@@ -99,6 +104,7 @@ struct StarterVocabulary: Sendable {
             let pinyinRange = Self.range(of: entry.syllables, in: tokens)
             let hanziWritten = runs.contains(entry.hanzi)
             guard pinyinRange != nil || hanziWritten else { continue }
+            if hanziWritten && runs != [entry.hanzi] { continue }
 
             // Partial Hanzi (e.g. 好 for 好像) only counts with the entry's exact pinyin, and any other
             // Han run is a contradiction: abstain rather than guess.
@@ -116,16 +122,47 @@ struct StarterVocabulary: Sendable {
                 guard glossTokens.contains(where: { Self.range(of: rest, in: $0) != nil }) else { return nil }
                 glossComplete = glossTokens.contains(rest)
             }
-            if hanziWritten && glossComplete { return nil } // nothing left to add
+            if hanziWritten && glossComplete && pinyinRange != nil { return nil }
+            let written = Self.writtenFields(in: text, pinyinRange: pinyinRange)
             let alternatives = entry.alternatives.compactMap { hanzi in entries.first { $0.hanzi == hanzi }?.candidate }
             return SuggestionProposal(
                 candidates: [entry.candidate] + alternatives,
                 hanziAlreadyWritten: hanziWritten,
                 glossAlreadyWritten: glossComplete,
-                hanziPrefixWritten: prefix
+                hanziPrefixWritten: prefix,
+                pinyinAlreadyWritten: pinyinRange != nil,
+                writtenPinyin: written.pinyin,
+                writtenGloss: written.gloss
             )
         }
         return nil
+    }
+
+    /// Use the original token ranges so tone marks, spelling and English punctuation survive review.
+    private static func writtenFields(in text: String, pinyinRange: Range<Int>?) -> (pinyin: String?, gloss: String?) {
+        let expression = try! NSRegularExpression(pattern: "[\\p{Latin}\\p{M}]+")
+        let spans = expression.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            .compactMap { Range($0.range, in: text) }
+        guard let first = spans.first else { return (nil, nil) }
+        let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "·"))
+        guard let pinyinRange, pinyinRange.upperBound <= spans.count else {
+            let hanzi = Self.hanziRuns(in: text).first
+            let start = hanzi.flatMap { text.range(of: $0) }.map(\.upperBound) ?? first.lowerBound
+            return (nil, String(text[start..<text.endIndex]).trimmingCharacters(in: separators))
+        }
+        let pinyin = String(text[spans[pinyinRange.lowerBound].lowerBound..<spans[pinyinRange.upperBound - 1].upperBound])
+        // Matching accepts English either before or after Pinyin. Preserve both when present.
+        var gloss: [String] = []
+        if pinyinRange.lowerBound > 0 {
+            gloss.append(String(text[first.lowerBound..<spans[pinyinRange.lowerBound].lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if pinyinRange.upperBound < spans.count {
+            var suffix = String(text[spans[pinyinRange.upperBound - 1].upperBound..<text.endIndex]).trimmingCharacters(in: separators)
+            let prefix = text[..<spans[pinyinRange.lowerBound].lowerBound].trimmingCharacters(in: .whitespaces)
+            if prefix.hasSuffix("("), suffix.hasPrefix(")") { suffix = String(suffix.dropFirst()).trimmingCharacters(in: separators) }
+            gloss.append(suffix)
+        }
+        return (pinyin, gloss.isEmpty ? nil : gloss.joined(separator: " "))
     }
 
     /// Where `needle` appears in `tokens`, either as separate syllables ("fu ze") or joined ("fuze").

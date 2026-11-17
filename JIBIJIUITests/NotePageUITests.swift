@@ -132,13 +132,9 @@ final class NotePageUITests: XCTestCase {
         XCTAssertTrue(paletteUndo.waitForExistence(timeout: 5))
 
         app.buttons["Check recognition"].tap()
-        let available = app.descendants(matching: .any)["recognizerAvailable"]
-        let unavailable = app.descendants(matching: .any)["recognizerUnavailable"]
-        let deadline = Date.now.addingTimeInterval(30)
-        while !available.exists, !unavailable.exists, Date.now < deadline {
-            _ = available.waitForExistence(timeout: 1)
-        }
-        XCTAssertTrue(available.exists || unavailable.exists, "The recognition check never finished")
+        // The status row may be outside the Form's visible area. Copy report becomes enabled
+        // only after the asynchronous report arrives, regardless of the sheet's scroll position.
+        XCTAssertTrue(app.buttons["Copy report"].waitForEnabled(timeout: 30), "The recognition check never finished")
         // The tool palette hides under the sheet, so it can't change ink the student can't see.
         XCTAssertFalse(paletteUndo.exists && paletteUndo.isHittable, "The tool palette is still usable above the sheet")
         attachScreenshot(of: app, named: "Recognition check")
