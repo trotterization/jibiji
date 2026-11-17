@@ -183,13 +183,22 @@ final class PageFlashcards {
     @discardableResult
     func merge(lines: [RecognizedLine], digest: String, corrections: [AcceptedAnnotation] = [],
                vocabulary: StarterVocabulary = .standard) -> Int {
+        // A replacement is already confirmed text. Don't ask a stroke recognizer
+        // to reinterpret the glyph-fill paths and override what the student approved.
+        let replacements = corrections.filter { $0.replacement != nil }
+        let lines = RecognitionCrossCheck.resolve(lines, vocabulary: vocabulary).filter { line in
+            !replacements.contains { note in
+                let overlap = note.anchor.intersection(line.bounds)
+                return !overlap.isNull && overlap.width * overlap.height >= line.bounds.width * line.bounds.height * 0.5
+            }
+        } + replacements.map { RecognizedLine(text: $0.text, bounds: $0.anchor) }
         var added = 0
         var claimedLines = Set<Int>()
         var activeNotes = Set<UUID>()
         var usedCards = Set<UUID>()
         for note in corrections {
             // Exact source text only; if several lines match, the one overlapping the note's anchor most.
-            let match = lines.indices.filter { lines[$0].rawText == note.recognizedText && note.anchor.intersects(lines[$0].bounds) }
+            let match = lines.indices.filter { (note.replacement != nil ? lines[$0].text == note.text : lines[$0].rawText == note.recognizedText) && note.anchor.intersects(lines[$0].bounds) }
                 .max { Self.overlap(note.anchor, lines[$0].bounds) < Self.overlap(note.anchor, lines[$1].bounds) }
             guard let li = match, let r = Self.resolve(note, line: lines[li], vocabulary: vocabulary) else { continue }
             claimedLines.insert(li)
@@ -245,10 +254,17 @@ final class PageFlashcards {
             cards[i].needsReview = true
         }
         for (index, line) in lines.enumerated() where !claimedLines.contains(index) {
-            guard let draft = FlashcardExtractor.extract(from: line.text) else { continue }
+            guard var draft = FlashcardExtractor.extract(from: line.text, vocabulary: vocabulary) else { continue }
+            draft.sourceText = line.rawText
+            draft.needsReview = draft.needsReview || line.needsReview
             let key = Self.dedupeKey(front: draft.front, back: draft.back, kind: draft.kind)
             if let i = cards.firstIndex(where: { ($0.dedupeKey ?? Self.dedupeKey(front: $0.front, back: $0.back, kind: $0.kind)) == key }) {
                 // Same card seen again: keep edits, re-anchor to this ink.
+                if line.needsReview, cards[i].status != .discarded {
+                    // The readings of this ink now disagree: flag it, and an approved card must be approved again.
+                    cards[i].needsReview = true
+                    if cards[i].status == .approved { cards[i].status = .draft }
+                }
                 if cards[i].inkDigest != digest {
                     // Ink changed since it was approved: it must be approved again.
                     if cards[i].status == .approved { cards[i].status = .draft }
@@ -260,7 +276,7 @@ final class PageFlashcards {
             }
             cards.append(PageFlashcard(
                 id: UUID(), front: draft.front, back: draft.back, kind: draft.kind,
-                sourceText: draft.sourceText, needsReview: draft.needsReview,
+                sourceText: draft.sourceText, needsReview: draft.needsReview || line.needsReview,
                 sourceBounds: line.bounds, inkDigest: digest, status: .draft, edited: false,
                 dedupeKey: key
             ))

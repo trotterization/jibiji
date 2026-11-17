@@ -1,0 +1,11 @@
+{
+  "det": {
+    "revision": "28fe5895c24fd108c19eb3e8479f4ab385fbfc62",
+    "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+  },
+  "rec": {
+    "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+    "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+    "dictionary_sha256": "679f4f4cbbb4f762e84fae998e02c08a556afbd115968104ca3b4aeee5cb2b19"
+  }
+}

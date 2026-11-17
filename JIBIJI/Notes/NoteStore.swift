@@ -141,6 +141,41 @@ struct NoteStore: Sendable {
         return "page-\(highest + 1)"
     }
 
+    /// When a page was last saved, or `nil` if it never was.
+    func modificationDate(pageID: String) -> Date? {
+        (try? fileURL(forPage: pageID).resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
+
+    // MARK: - Library (names, colors, pins, folders)
+
+    static let libraryFileName = "library.json"
+
+    var libraryURL: URL {
+        directory.appending(path: Self.libraryFileName, directoryHint: .notDirectory)
+    }
+
+    /// How the student arranged the notebook. Kept apart from the ink and the page order, so a
+    /// problem here never touches either. A notebook without the file gets the defaults.
+    func loadLibrary() throws -> NotebookLibrary {
+        let data: Data
+        do {
+            data = try Data(contentsOf: libraryURL)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return NotebookLibrary()
+        }
+        guard let library = try? JSONDecoder().decode(NotebookLibrary.self, from: data), library.version == 1 else {
+            throw NoteStoreError.unreadableLibrary(url: libraryURL)
+        }
+        return library
+    }
+
+    func saveLibrary(_ library: NotebookLibrary) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(library).write(to: libraryURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
     /// Moves an unreadable page file aside so new ink never overwrites it, and returns where it went.
     func setAsideUnreadablePage(pageID: String, date: Date = .now) throws -> URL {
         let stamp = "\(Int(date.timeIntervalSince1970))-\(UUID().uuidString.prefix(8))"
@@ -153,12 +188,40 @@ struct NoteStore: Sendable {
     }
 }
 
+/// Names, colors, pins, and folders for the home page. Folders only group pages: no file moves.
+struct NotebookLibrary: Codable, Equatable {
+    var version = 1
+    var title: String?
+    var folders: [String] = []
+    var pages: [String: PageInfo] = [:]
+
+    struct PageInfo: Codable, Equatable {
+        var name: String?
+        var tag: PageTag?
+        var pinned = false
+        var folder: String?
+
+        var isEmpty: Bool { name == nil && tag == nil && !pinned && folder == nil }
+    }
+}
+
+/// A page's color on the home page: the logo's colors, plus graphite.
+enum PageTag: String, Codable, CaseIterable, Identifiable {
+    case rose, gold, teal, graphite
+
+    var id: Self { self }
+    var name: String { rawValue.capitalized }
+}
+
 enum NoteStoreError: Error, LocalizedError {
     case unreadableDrawing(url: URL, underlying: any Error)
     case unreadablePageIndex(url: URL, reason: String)
+    case unreadableLibrary(url: URL)
 
     var errorDescription: String? {
         switch self {
+        case .unreadableLibrary(let url):
+            "Page names and folders (\(url.lastPathComponent)) can't be read. Your pages are untouched."
         case .unreadablePageIndex(let url, let reason):
             "The page list (\(url.lastPathComponent)) can't be read: \(reason). Your page files are untouched."
         case .unreadableDrawing(let url, let underlying):

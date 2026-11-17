@@ -179,6 +179,13 @@ enum FlashcardExtractor {
                 if StarterVocabulary.latinTokens(words[0..<k].joined()).joined() == target { consumed = k; break }
             }
             pinyin = entry.pinyin
+            if consumed > 0 {
+                let observed = words[0..<consumed].joined(separator: " ")
+                if !RecognitionCrossCheck.pinyinAgrees(observed, with: entry.pinyin) {
+                    pinyin = observed
+                    review = true
+                }
+            }
         } else {
             // Unknown term: a leading run of words counts as pinyin only if, ignoring spaces and tones, it equals
             // the local Han-Latin romanization of the term. Otherwise nothing is pinyin and the written text is
@@ -197,7 +204,7 @@ enum FlashcardExtractor {
         var back: String
         if gloss.isEmpty {
             guard let entry else { return nil }
-            back = "\(entry.pinyin) — \(entry.glosses[0])"
+            back = "\(pinyin) — \(entry.glosses[0])"
         } else {
             let grounded = entry?.glosses.contains { $0.caseInsensitiveCompare(gloss) == .orderedSame } ?? false
             if !grounded { review = true }

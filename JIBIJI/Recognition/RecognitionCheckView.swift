@@ -10,6 +10,9 @@ struct RecognitionCheckView: View {
     @State private var report: RecognitionReport?
     @State private var fallbackText: String?
     @State private var fallbackElapsed: Duration?
+    @AppStorage("JibijiUsePaddlePipeline") private var usePaddlePipeline = false
+    @State private var paddleReport: String?
+    @State private var paddleRunning = false
     @State private var query = ""
     @State private var searchResult: String?
     @State private var copied = false
@@ -28,9 +31,38 @@ struct RecognitionCheckView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("PaddleOCR v6 · on-device preview") {
+                    if PaddleTextPipeline.isInstalled {
+                        Button(paddleRunning ? "Comparing…" : "Compare v6 reading") {
+                            paddleRunning = true
+                            Task {
+                                let clock = ContinuousClock()
+                                let start = clock.now
+                                do {
+                                    let lines = try await PaddleTextPipeline.shared.lines(in: drawing)
+                                    let text = lines.isEmpty ? "No confident reading found." : lines.map(\.text).joined(separator: "\n")
+                                    paddleReport = "\(text)\n\nElapsed: \(RecognitionReport.format(clock.now - start))"
+                                } catch { paddleReport = error.localizedDescription }
+                                paddleRunning = false
+                            }
+                        }
+                        .disabled(paddleRunning)
+                        .accessibilityIdentifier("comparePaddlePipeline")
+                        if let paddleReport { Text(paddleReport).textSelection(.enabled) }
+                        Toggle("Use v6 for suggestions and cards", isOn: $usePaddlePipeline)
+                            .accessibilityIdentifier("usePaddlePipeline")
+                        Text("Preview: detects text regions before reading them. Compare against your ink; it can still miss or misread handwriting. Turn this off to return to automatic recognition.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        Text("The v6 model pack is not installed.")
+                        if usePaddlePipeline {
+                            Button("Return to automatic recognition") { usePaddlePipeline = false }
+                        }
+                    }
+                }
                 if let report {
                     if !report.supportsSimplifiedChinese {
-                        Section("Chinese image recognition · used by Suggestions") {
+                        Section(usePaddlePipeline ? "Automatic reader · comparison" : "Chinese image recognition · used by Suggestions") {
                             Text(fallbackText ?? "Reading Chinese and English ink…")
                                 .textSelection(.enabled)
                             if let elapsed = fallbackElapsed {
@@ -51,6 +83,9 @@ struct RecognitionCheckView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.surface)
+            .tint(.primary)
             .navigationTitle("Recognition check")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
