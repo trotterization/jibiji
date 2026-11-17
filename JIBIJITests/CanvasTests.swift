@@ -213,11 +213,15 @@ struct CanvasTests {
     func shortPageStaysScrollableAtEveryZoom(zoom: Double) throws {
         let z = try zoomable(saved: SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 100, y: 200)))
         z.canvas.setZoomScale(CGFloat(zoom), animated: false)
+        // A sentinel size, so only the fit can produce the expected one.
+        z.canvas.contentSize = CGSize(width: 1, height: 1)
         z.coordinator.scrollViewDidEndZooming(z.canvas, with: nil, atScale: CGFloat(zoom))
         let page = z.canvas.bounds.inset(by: z.canvas.adjustedContentInset).size
         // The whole zoomed page can be reached by panning, not just the part that fits the screen.
         #expect(abs(z.canvas.contentSize.width - page.width * CGFloat(zoom)) < 1)
+        // PencilKit itself keeps contentSize at least the canvas size times the zoom, so height lies between.
         #expect(z.canvas.contentSize.height >= page.height * CGFloat(zoom) - 1)
+        #expect(z.canvas.contentSize.height <= z.canvas.bounds.height * CGFloat(zoom) + 1)
         if zoom > 1 {
             #expect(z.canvas.contentSize.width > page.width && z.canvas.contentSize.height > page.height)
             z.canvas.contentOffset = CGPoint(x: z.canvas.contentSize.width - page.width, y: z.canvas.contentSize.height - page.height)
