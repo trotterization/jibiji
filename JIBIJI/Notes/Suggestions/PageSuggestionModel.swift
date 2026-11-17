@@ -76,6 +76,7 @@ struct PendingSuggestion: Identifiable, Equatable {
     var sourceText: String? = nil
     var proposal: SuggestionProposal
     var selectedIndex = 0
+    var sourceStrokeIDs: Set<String> = []
 
     var candidate: SuggestionCandidate { proposal.candidates[selectedIndex] }
     var hasAlternatives: Bool { proposal.candidates.count > 1 }
@@ -112,6 +113,7 @@ struct AcceptedAnnotation: Codable, Identifiable, Equatable {
     var pinyin: String? = nil
     /// The English the user approved (including their edits). Nil when the note carries none.
     var gloss: String? = nil
+    var replacement: InkReplacement? = nil
 
     /// A note's text split into parts. Parts joined by "·"; Hanzi, pinyin and anything else (gloss).
     struct ParsedText: Equatable {
@@ -213,7 +215,10 @@ final class PageSuggestionModel {
     /// Whether a note's source ink is currently present. Derived from the current drawing, so erasing
     /// hides the note and undoing the erase (or redrawing there) shows it again. Nothing is persisted.
     static func isVisible(_ note: AcceptedAnnotation, in drawing: PKDrawing) -> Bool {
-        drawing.strokes.contains { $0.renderBounds.intersects(note.anchor) }
+        if let replacement = note.replacement {
+            return drawing.strokes.contains { replacement.replacementStrokeIDs.contains(InkSelection.identity($0)) && !$0.renderBounds.isEmpty }
+        }
+        return drawing.strokes.contains { $0.renderBounds.intersects(note.anchor) }
     }
 
     /// The page is no longer shown: drop pending suggestions and any running request. Accepted notes stay.
@@ -227,9 +232,9 @@ final class PageSuggestionModel {
 
     /// Lowest page y (just past the last chip) that notes need, so the canvas can scroll to them.
     var noteBottom: CGFloat? {
-        let accepted = annotations.map { $0.anchor.maxY + 6 + 36 }
+        let accepted = annotations.filter { $0.replacement == nil }.map { $0.anchor.maxY + 6 + 36 }
         let provisional = pending.map { item in
-            item.anchor.maxY + 6 + CGFloat(annotations.filter { $0.anchor.intersects(item.anchor) }.count + 1) * 36
+            item.anchor.maxY
         }
         return (accepted + provisional).max()
     }
@@ -251,11 +256,11 @@ final class PageSuggestionModel {
             let outcome: Result<[RecognizedLine], any Error>
             do { outcome = .success(try await reader.lines(in: drawing)) } catch { outcome = .failure(error) }
             guard let self, !Task.isCancelled, self.revision == requested else { return }
-            self.finish(outcome, revision: requested)
+            self.finish(outcome, revision: requested, drawing: drawing)
         }
     }
 
-    private func finish(_ outcome: Result<[RecognizedLine], any Error>, revision: Int) {
+    private func finish(_ outcome: Result<[RecognizedLine], any Error>, revision: Int, drawing: PKDrawing) {
         switch outcome {
         case .failure(let error):
             // Recognition trouble never blocks writing or touches strokes.
@@ -271,11 +276,12 @@ final class PageSuggestionModel {
                         hanziAlreadyWritten: false, glossAlreadyWritten: true)
                 } else { return nil }
                 let alreadyAccepted = annotations.contains { note in
-                    note.recognizedText == line.rawText && note.anchor.intersects(line.bounds)
+                    note.recognizedText == line.rawText && note.anchor.intersects(line.bounds) && Self.isVisible(note, in: drawing)
                 }
                 if alreadyAccepted { return nil }
                 return PendingSuggestion(revision: revision, anchor: line.bounds, recognizedText: line.text,
-                                         sourceText: line.sourceText, proposal: proposal)
+                                         sourceText: line.sourceText, proposal: proposal,
+                                         sourceStrokeIDs: Set(InkSelection.indices(in: drawing, bounds: line.bounds).map { InkSelection.identity(drawing.strokes[$0]) }))
             }
             status = pending.isEmpty ? .message("No clear reading found. Try a smaller group of words or clearer spacing. Your ink is unchanged.") : .idle
         }
@@ -315,6 +321,38 @@ final class PageSuggestionModel {
         undoStack.append(annotation.id)
         pending.removeAll { $0.id == id }
         persist()
+    }
+
+    /// Persist recovery information before the page is changed. A failed metadata
+    /// write must never result in deleting the original handwritten strokes.
+    func acceptReplacement(_ item: PendingSuggestion, text: String, bounds: CGRect, recovery: InkReplacement) -> Bool {
+        guard canSave, item.revision == revision, pending.contains(where: { $0.id == item.id }) else { return false }
+        let sameCandidate = text == item.candidate.hanzi
+        let note = AcceptedAnnotation(id: UUID(), text: text, edited: !sameCandidate, anchor: bounds,
+                                      recognizedText: item.recognizedText,
+                                      hanzi: StarterVocabulary.hanzi(in: text).isEmpty ? nil : text,
+                                      pinyin: sameCandidate && !item.candidate.pinyin.isEmpty ? item.candidate.pinyin : nil,
+                                      gloss: sameCandidate && !item.candidate.gloss.isEmpty ? item.candidate.gloss : nil,
+                                      replacement: recovery)
+        do {
+            try store.save(annotations + [note], pageID: pageID)
+            annotations.append(note)
+            undoStack.append(note.id)
+            pending.removeAll { $0.id == item.id }
+            storageProblem = nil
+            return true
+        } catch {
+            storageProblem = "The replacement couldn't be saved. Your original writing is unchanged."
+            return false
+        }
+    }
+
+    func keepUnchangedPending(_ items: [PendingSuggestion], excluding bounds: CGRect) {
+        pending = items.filter { !$0.anchor.intersects(bounds) }.map { item in
+            return PendingSuggestion(revision: revision, anchor: item.anchor, recognizedText: item.recognizedText,
+                                        sourceText: item.sourceText, proposal: item.proposal,
+                                        selectedIndex: item.selectedIndex, sourceStrokeIDs: item.sourceStrokeIDs)
+        }
     }
 
     /// Removes the most recently accepted note.

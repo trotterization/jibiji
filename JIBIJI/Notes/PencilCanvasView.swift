@@ -6,7 +6,7 @@ import UIKit
 @MainActor
 @Observable
 final class CanvasController {
-    @ObservationIgnored fileprivate weak var canvasView: PKCanvasView?
+    @ObservationIgnored weak var canvasView: PKCanvasView?
 
     /// The canvas's scroll offset and zoom, so SwiftUI overlays can follow the ink.
     private(set) var contentOffset = CGPoint.zero
@@ -25,6 +25,19 @@ final class CanvasController {
             width: rect.width * zoomScale,
             height: rect.height * zoomScale
         )
+    }
+
+    /// Install a model edit as one native undo operation. Native undo/redo notifies
+    /// the model, while the initial model-authored change is already accounted for.
+    func applyDrawing(_ drawing: PKDrawing, actionName: String = "Replace handwriting", notify: Bool = false) {
+        guard let canvas = canvasView as? NoteCanvasView else { return }
+        let old = canvas.drawing
+        canvas.undoManager?.registerUndo(withTarget: self) { controller in
+            controller.applyDrawing(old, actionName: actionName, notify: true)
+        }
+        canvas.undoManager?.setActionName(actionName)
+        canvas.setModelDrawing(drawing)
+        if notify { canvas.delegate?.canvasViewDrawingDidChange?(canvas) }
     }
 
     /// Gives the canvas first responder again (e.g. after a sheet closes) so the tool picker returns.
@@ -128,6 +141,13 @@ final class NoteCanvasView: PKCanvasView {
     /// assigned while the canvas is still zero-sized (as it is in `makeUIView`), so it waits until then.
     var savedDrawing: PKDrawing?
     private(set) var isApplyingSavedDrawing = false
+
+    func setModelDrawing(_ next: PKDrawing) {
+        isApplyingSavedDrawing = true
+        drawing = next
+        isApplyingSavedDrawing = false
+        fitContentToInk()
+    }
 
     /// Each page's canvas has its own undo history. Without this, every canvas shares the window's
     /// UndoManager, so Undo on one page could be offered for, or act on, another page's strokes.

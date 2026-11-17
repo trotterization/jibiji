@@ -122,3 +122,38 @@ struct CanvasTests {
         withExtendedLifetime(hosted) {}
     }
 }
+
+@Suite("Native replacement undo", .serialized)
+@MainActor
+struct ReplacementCanvasTests {
+    @Test func replacementIsOneNativeUndoStepAndRedoNotifiesThePage() async throws {
+        let original = SyntheticInk.drawing(writing: "大")
+        let replacement = try #require(CleanHandwriting.drawing(text: "牛", in: original.bounds))
+        let coordinator = PencilCanvasView.Coordinator()
+        var changes: [PKDrawing] = []
+        coordinator.onDrawingChange = { changes.append($0) }
+        let canvas = NoteCanvasView()
+        canvas.savedDrawing = original
+        canvas.delegate = coordinator
+        let controller = CanvasController()
+        controller.canvasView = canvas
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 820, height: 1100)
+        window.addSubview(canvas); canvas.frame = window.bounds; window.isHidden = false
+        canvas.layoutIfNeeded()
+        let undo = try #require(canvas.undoManager)
+        undo.beginUndoGrouping()
+        controller.applyDrawing(replacement)
+        undo.endUndoGrouping()
+        #expect(PageFlashcards.digest(of: canvas.drawing) == PageFlashcards.digest(of: replacement))
+        #expect(undo.canUndo)
+        undo.undo()
+        #expect(PageFlashcards.digest(of: canvas.drawing) == PageFlashcards.digest(of: original))
+        #expect(undo.canRedo)
+        undo.redo()
+        #expect(PageFlashcards.digest(of: canvas.drawing) == PageFlashcards.digest(of: replacement))
+        #expect(changes.count == 2)
+        withExtendedLifetime((window, coordinator, controller)) {}
+    }
+}

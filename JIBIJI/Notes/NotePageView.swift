@@ -8,6 +8,7 @@ struct NotePageView: View {
     @State private var canvas = CanvasController()
     @State private var showsRecognitionCheck = false
     @State private var showsCards = false
+    @State private var showsSuggestionReview = false
 
     var body: some View {
         NavigationStack {
@@ -76,9 +77,15 @@ struct NotePageView: View {
                 page.drawingDidChange(drawing)
             }
             // Same frame as the canvas, so suggestions can follow its scroll offset.
-            .overlay { SuggestionOverlay(suggestions: page.suggestions, drawing: page.drawing, canvas: canvas) }
+            .overlay { SuggestionOverlay(suggestions: page.suggestions, drawing: page.drawing, canvas: canvas, review: { canvas.resignFocus(); showsSuggestionReview = true }) }
             // A separate canvas (and tool picker) per page.
             .id(page.pageID)
+            .onChange(of: page.suggestions.pending.count) { old, count in
+                if old == 0 && count > 0 { canvas.resignFocus(); showsSuggestionReview = true }
+            }
+            .sheet(isPresented: $showsSuggestionReview, onDismiss: canvas.focus) {
+                SuggestionReviewView(page: page, canvas: canvas)
+            }
             // Scoped to this page's identity; accepted notes are kept.
             .onDisappear { page.suggestions.cancelPending() }
             .ignoresSafeArea(.container, edges: .bottom)
@@ -130,17 +137,26 @@ struct NotePageView: View {
             }
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-            if let suggestions = currentPage?.suggestions, suggestions.canUndo {
-                Button("Undo suggestion", systemImage: "arrow.uturn.backward.circle") {
-                    suggestions.undoLastAccept()
+            if let page = currentPage, let note = page.latestVisibleReplacement {
+                Button("Restore handwriting", systemImage: "arrow.uturn.backward.circle") {
+                    if page.restoreOriginal(note.id) { canvas.applyDrawing(page.drawing, actionName: "Restore handwriting") }
                 }
                 .accessibilityIdentifier("undoSuggestion")
+                Button("Delete replacement", systemImage: "trash") {
+                    page.deleteReplacement(note.id)
+                    canvas.applyDrawing(page.drawing, actionName: "Delete replacement")
+                }
+                .accessibilityIdentifier("deleteReplacement")
+            } else if let suggestions = currentPage?.suggestions, suggestions.canUndo, suggestions.annotations.last?.replacement == nil {
+                Button("Undo suggestion", systemImage: "arrow.uturn.backward.circle") { suggestions.undoLastAccept() }
+                    .accessibilityIdentifier("undoSuggestion")
             }
-            Button("Suggest", systemImage: "text.badge.plus") {
+            Button("Clean up", systemImage: "hand.draw") {
                 guard let page = currentPage else { return }
                 page.suggestions.request(for: page.drawing)
             }
             .disabled(!(currentPage?.isEditable ?? false))
+            .labelStyle(.titleAndIcon)
             .accessibilityIdentifier("suggestButton")
             Button("Cards", systemImage: "rectangle.on.rectangle") {
                 currentPage?.saveIfNeeded()
