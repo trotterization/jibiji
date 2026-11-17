@@ -100,12 +100,12 @@ actor VisionInkReader {
                     merged.readings.insert(reading, at: 0)
                     merged.text = reading
                 }
-                return [merged]
+                return [merged.crossChecked()]
             } else if lines.isEmpty {
                 return [RecognizedLine(text: reading, bounds: drawing.bounds, readings: readings)]
             }
         }
         #endif
-        return lines
+        return lines.map { $0.crossChecked() }
     }
 }

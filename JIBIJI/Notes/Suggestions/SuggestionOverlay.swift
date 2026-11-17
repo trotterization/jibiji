@@ -34,6 +34,7 @@ struct SuggestionOverlay: View {
                         item: item,
                         replace: { replace(item, with: item.cleanText) },
                         edit: { editText = item.cleanText; editing = item },
+                        addNote: { suggestions.accept(item.id) },
                         skip: { withAnimation(Theme.Motion.list) { suggestions.dismiss(item.id) } },
                         select: { index in withAnimation(Theme.Motion.quick) { suggestions.select(index, for: item.id) } }
                     )
@@ -168,23 +169,35 @@ private struct PendingChip: View {
     let item: PendingSuggestion
     let replace: () -> Void
     let edit: () -> Void
+    let addNote: () -> Void
     let skip: () -> Void
     let select: (Int) -> Void
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(item.cleanText)
-                .font(Font(CleanHandwriting.font(size: 22)))
-                .foregroundStyle(Color.primary)
-                .lineLimit(1)
-                .contentTransition(.opacity)
-                .padding(.leading, 12)
-                .padding(.trailing, 4)
-                .accessibilityIdentifier("replacementPreview")
+            VStack(alignment: .leading, spacing: 2) {
+                // What Replace would write, or (when ink can't be replaced) exactly what "Add as note" saves.
+                Text(item.allowsInkReplacement ? item.cleanText : item.annotationText)
+                    .font(Font(CleanHandwriting.font(size: 22)))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
+                    .accessibilityIdentifier("replacementPreview")
+                if let note = item.uncertaintyNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 320, alignment: .leading)
+                        .accessibilityIdentifier("suggestionUncertainty")
+                }
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 4)
 
             Button("Replace", action: replace)
                 .buttonStyle(SolidButtonStyle())
-                .disabled(item.sourceStrokeIDs.isEmpty)
+                .disabled(item.sourceStrokeIDs.isEmpty || !item.allowsInkReplacement)
                 .accessibilityLabel("Replace handwriting with \(item.cleanText)")
                 .accessibilityIdentifier("replaceHandwriting")
 
@@ -204,7 +217,10 @@ private struct PendingChip: View {
                         }
                     }
                 }
+                Button("Add as note (keep ink)", systemImage: "note.text", action: addNote)
+                    .accessibilityIdentifier("addSuggestionNote")
                 Button("Edit…", systemImage: "pencil", action: edit)
+                    .disabled(!item.allowsInkReplacement)
                 Button("Skip", systemImage: "xmark", action: skip)
                     .accessibilityIdentifier("skipSuggestion")
             } label: {

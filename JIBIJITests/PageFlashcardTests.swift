@@ -312,4 +312,41 @@ final class PageFlashcardTests: XCTestCase {
         await task.value
         XCTAssertTrue(model.cards.isEmpty)
     }
+
+    // MARK: Issue #12: cross-checked readings
+
+    func testDraftUsesCorrectedPinyinNotNone() {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: FakeReader(result: []))
+        model.inkChanged(PKDrawing())
+        let line = RecognizedLine(text: "农夫 none fu farmer", bounds: .zero, alternatives: ["农夫 nong fu farmer"]).crossChecked()
+        model.merge(lines: [line], digest: model.currentDigest!)
+        let card = model.cards.first
+        XCTAssertEqual(card?.front, "农夫")
+        XCTAssertFalse(card?.back.contains("none") ?? true)
+        XCTAssertTrue(card?.back.contains("nong fu") ?? false)
+    }
+
+    func testUnresolvedReadingMarksTheDraftForReview() {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: FakeReader(result: []))
+        model.inkChanged(PKDrawing())
+        let line = RecognizedLine(text: "农夫 none fu farmer", bounds: .zero, alternatives: ["农夫 nang fu farmer"]).crossChecked()
+        XCTAssertTrue(line.needsReview)
+        model.merge(lines: [line], digest: model.currentDigest!)
+        XCTAssertEqual(model.cards.count, 1)
+        XCTAssertTrue(model.cards[0].needsReview)
+    }
+
+    func testReReadingAnApprovedCardAsUnresolvedFlagsItAgain() throws {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: FakeReader(result: []))
+        model.inkChanged(PKDrawing())
+        let digest = model.currentDigest!
+        model.merge(lines: [RecognizedLine(text: "农夫 nong fu farmer", bounds: .zero)], digest: digest)
+        let id = try XCTUnwrap(model.cards.first?.id)
+        model.approve(id)
+        let flagged = RecognizedLine(text: "农夫 nong fu farmer", bounds: .zero, needsReview: true)
+        model.merge(lines: [flagged], digest: digest)
+        XCTAssertEqual(model.cards.count, 1)
+        XCTAssertTrue(model.cards[0].needsReview)
+        XCTAssertEqual(model.cards[0].status, .draft)
+    }
 }

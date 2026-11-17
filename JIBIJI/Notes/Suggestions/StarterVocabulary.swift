@@ -19,6 +19,31 @@ struct SuggestionProposal: Equatable, Sendable {
     var glossAlreadyWritten: Bool
     /// A strict prefix of the best match's Hanzi already written (e.g. 好 of 好像); only the rest is offered.
     var hanziPrefixWritten: String = ""
+    /// How the student's written Pinyin compares with the word's Pinyin. Judged only against Hanzi that is
+    /// actually written, since handwriting recognition alone can't tell a misspelling from a misread.
+    var pinyinState: PinyinState = .notWritten
+    var pinyinAlreadyWritten: Bool { pinyinState != .notWritten }
+}
+
+enum PinyinState: Equatable, Sendable {
+    case notWritten
+    /// Matches the word's tone-marked Pinyin: kept as written.
+    case correct
+    /// The right letters and no tone marks: a tone-marked reading is offered.
+    case missingTones
+    /// The right letters with tone marks that differ from the word's: a provisional correction.
+    case wrongTones(written: String)
+    /// Letters one edit away from the word's Pinyin, next to its Hanzi. Could be a misspelling or a misread
+    /// of the handwriting, so this is shown as uncertain and never used to change the ink.
+    case possibleSpelling(written: String)
+
+    /// A tone or spelling mismatch that could be the recognizer's mistake rather than the student's.
+    var isUncertain: Bool {
+        switch self {
+        case .wrongTones, .possibleSpelling: return true
+        default: return false
+        }
+    }
 }
 
 /// A small, explicitly offline starter list used to prove the inline-suggestion flow.
@@ -45,6 +70,7 @@ struct StarterVocabulary: Sendable {
         Entry(hanzi: "虽然", pinyin: "suīrán", glosses: ["although"]),
         Entry(hanzi: "但是", pinyin: "dànshì", glosses: ["but", "however"]),
         Entry(hanzi: "好像", pinyin: "hǎoxiàng", glosses: ["to seem like; to look like", "to seem like", "to look like"]),
+        Entry(hanzi: "农夫市集", pinyin: "nóngfū shìjí", glosses: ["farmers' market"]),
     ])
 
     var entries: [Entry]
@@ -66,6 +92,37 @@ struct StarterVocabulary: Sendable {
         }
         if !current.isEmpty { tokens.append(current) }
         return tokens
+    }
+
+    /// Lowercase Latin letter runs as written (tone marks kept) beside their folded form. Same runs as `latinTokens`.
+    static func latinTokenPairs(_ text: String) -> [(raw: String, folded: String)] {
+        var pairs: [(raw: String, folded: String)] = []
+        var raw = "", folded = ""
+        for character in text.precomposedStringWithCanonicalMapping.lowercased() {
+            let flat = String(character).folding(options: .diacriticInsensitive, locale: nil)
+            if flat.count == 1, flat.allSatisfy({ $0.isASCII && $0.isLetter }) {
+                raw.append(character)
+                folded += flat
+            } else if !raw.isEmpty {
+                pairs.append((raw, folded))
+                raw = ""; folded = ""
+            }
+        }
+        if !raw.isEmpty { pairs.append((raw, folded)) }
+        return pairs
+    }
+
+    private static func editDistance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        var previous = Array(0...b.count)
+        for i in 1...max(a.count, 1) where !a.isEmpty {
+            var row = [i]
+            for j in 1...max(b.count, 1) where !b.isEmpty {
+                row.append(min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1)))
+            }
+            previous = row
+        }
+        return a.isEmpty ? b.count : (b.isEmpty ? a.count : previous[b.count])
     }
 
     static func hanzi(in text: String) -> String {
@@ -93,11 +150,18 @@ struct StarterVocabulary: Sendable {
     /// Conservative: needs the entry's pinyin (tones optional) or its Hanzi in the text. Any other Latin
     /// words must be a run of that entry's English gloss, otherwise the provider abstains.
     func proposal(forRecognizedText text: String) -> SuggestionProposal? {
-        let tokens = Self.latinTokens(text)
+        let pairs = Self.latinTokenPairs(text)
+        let tokens = pairs.map(\.folded)
         let runs = Self.hanziRuns(in: text)
         for entry in entries {
-            let pinyinRange = Self.range(of: entry.syllables, in: tokens)
+            var pinyinRange = Self.range(of: entry.syllables, in: tokens)
             let hanziWritten = runs.contains(entry.hanzi)
+            var misspelled = false
+            // Right Hanzi, Pinyin one letter off: a possible misspelling (or misread), never a certainty.
+            if pinyinRange == nil, hanziWritten, let near = Self.nearRange(of: entry.syllables, in: tokens) {
+                pinyinRange = near
+                misspelled = true
+            }
             guard pinyinRange != nil || hanziWritten else { continue }
 
             // Partial Hanzi (e.g. 好 for 好像) only counts with the entry's exact pinyin, and any other
@@ -108,6 +172,18 @@ struct StarterVocabulary: Sendable {
                 prefix = runs[0]
             }
 
+            var state = PinyinState.notWritten
+            if let range = pinyinRange {
+                let written = pairs[range].map(\.raw).joined(separator: " ")
+                let writtenFlat = pairs[range].map(\.raw).joined()
+                let expected = entry.pinyin.precomposedStringWithCanonicalMapping.lowercased().filter { !$0.isWhitespace }
+                if misspelled {
+                    state = .possibleSpelling(written: written)
+                } else {
+                    state = Self.toneState(written: writtenFlat, expected: expected, display: written)
+                }
+            }
+
             var rest = tokens
             if let pinyinRange { rest.removeSubrange(pinyinRange) }
             var glossComplete = false
@@ -116,14 +192,42 @@ struct StarterVocabulary: Sendable {
                 guard glossTokens.contains(where: { Self.range(of: rest, in: $0) != nil }) else { return nil }
                 glossComplete = glossTokens.contains(rest)
             }
-            if hanziWritten && glossComplete { return nil } // nothing left to add
+            if hanziWritten && glossComplete && state == .correct { return nil } // nothing left to add
             let alternatives = entry.alternatives.compactMap { hanzi in entries.first { $0.hanzi == hanzi }?.candidate }
             return SuggestionProposal(
                 candidates: [entry.candidate] + alternatives,
                 hanziAlreadyWritten: hanziWritten,
                 glossAlreadyWritten: glossComplete,
-                hanziPrefixWritten: prefix
+                hanziPrefixWritten: prefix,
+                pinyinState: state
             )
+        }
+        return nil
+    }
+
+    /// Same letters, so compare tone marks letter by letter: a written mark that conflicts is wrong;
+    /// marks that are all right but incomplete (hǎo xiang) are just missing tones.
+    private static func toneState(written: String, expected: String, display: String) -> PinyinState {
+        let w = Array(written), e = Array(expected)
+        guard w.count == e.count else { return .wrongTones(written: display) }
+        var missing = false
+        for (wc, ec) in zip(w, e) where wc != ec {
+            let plain = String(wc).folding(options: .diacriticInsensitive, locale: nil)
+            if String(wc) == plain { missing = true } else { return .wrongTones(written: display) }
+        }
+        return missing ? .missingTones : .correct
+    }
+
+    /// A run of tokens one edit away from `needle`'s letters (never an exact match).
+    private static func nearRange(of needle: [String], in tokens: [String]) -> Range<Int>? {
+        let joined = needle.joined()
+        guard joined.count >= 4 else { return nil }
+        for start in tokens.indices {
+            var accumulated = ""
+            for end in start..<min(tokens.count, start + needle.count + 2) {
+                accumulated += tokens[end]
+                if abs(accumulated.count - joined.count) <= 1, editDistance(accumulated, joined) == 1 { return start..<(end + 1) }
+            }
         }
         return nil
     }

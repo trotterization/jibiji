@@ -46,6 +46,25 @@ struct InkReplacementTests {
         print("LOCAL CLEAN INK PREVIEW: \(file.path)")
     }
 
+    @Test func uncertainReadingNeverReplacesInkEvenFromTheEditPath() async throws {
+        let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
+        let store = NoteStore(directory: folder)
+        let ink = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 80, y: 160))
+        try store.save(ink, pageID: "page-1")
+        let page = NotePageModel(pageID: "page-1", store: store,
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "农夫市集 none fu shi ji", bounds: ink.bounds)]))
+        page.suggestions.request(for: page.drawing)
+        await page.suggestions.task?.value
+        let item = try #require(page.suggestions.pending.first)
+        #expect(!item.allowsInkReplacement)
+        #expect(!page.replaceSuggestion(item.id, with: "农夫市集 nóngfū shìjí"))
+        #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: ink))
+        // It can still be kept as a note beside the ink.
+        page.suggestions.accept(item.id)
+        #expect(page.suggestions.annotations.count == 1)
+        #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: ink))
+    }
+
     @Test func replacementRestoresAfterRelaunchAndPreservesOtherWriting() async throws {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let store = NoteStore(directory: folder)

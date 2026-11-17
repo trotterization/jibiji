@@ -258,6 +258,11 @@ final class PageFlashcards {
             let key = Self.dedupeKey(front: draft.front, back: draft.back, kind: draft.kind)
             if let i = cards.firstIndex(where: { ($0.dedupeKey ?? Self.dedupeKey(front: $0.front, back: $0.back, kind: $0.kind)) == key }) {
                 // Same card seen again: keep edits, re-anchor to this ink.
+                if line.needsReview, cards[i].status != .discarded {
+                    // The readings of this ink now disagree: flag it, and an approved card must be approved again.
+                    cards[i].needsReview = true
+                    if cards[i].status == .approved { cards[i].status = .draft }
+                }
                 if cards[i].inkDigest != digest {
                     // Ink changed since it was approved: it must be approved again.
                     if cards[i].status == .approved { cards[i].status = .draft }
@@ -269,7 +274,7 @@ final class PageFlashcards {
             }
             cards.append(PageFlashcard(
                 id: UUID(), front: draft.front, back: draft.back, kind: draft.kind,
-                sourceText: draft.sourceText, needsReview: draft.needsReview,
+                sourceText: draft.sourceText, needsReview: draft.needsReview || line.needsReview,
                 sourceBounds: line.bounds, inkDigest: digest, status: .draft, edited: false,
                 dedupeKey: key
             ))

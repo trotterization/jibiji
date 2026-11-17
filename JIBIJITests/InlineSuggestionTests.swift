@@ -25,7 +25,8 @@ struct StarterVocabularyTests {
         let proposal = try #require(vocabulary.proposal(forRecognizedText: "负责 responsible for"))
         #expect(proposal.hanziAlreadyWritten)
         var pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "", proposal: proposal)
-        #expect(pending.annotationText == "to be responsible for")
+        // Hanzi and English written, pinyin not: only the missing pinyin is offered.
+        #expect(pending.annotationText == "(fùzé) · to be responsible for")
         pending.selectedIndex = 1
         // An alternative is a different word, so it carries its own Hanzi even though 负责 was written.
         #expect(pending.annotationText == "承担 · (chéngdān) · to bear responsibility for")
@@ -39,7 +40,8 @@ struct StarterVocabularyTests {
     }
 
     @Test func abstainsWhenNothingIsLeftToAddOrNothingMatches() {
-        #expect(vocabulary.proposal(forRecognizedText: "负责 to be responsible for") == nil)
+        // Hanzi, pinyin and English all written: nothing left to add.
+        #expect(vocabulary.proposal(forRecognizedText: "负责 fùzé to be responsible for") == nil)
         #expect(vocabulary.proposal(forRecognizedText: "") == nil)
         #expect(vocabulary.proposal(forRecognizedText: "hello world") == nil)
         #expect(vocabulary.proposal(forRecognizedText: "你好") == nil)
@@ -63,9 +65,14 @@ struct StarterVocabularyTests {
         #expect(try note("好像 hǎo xiàng") == "to seem like; to look like")
     }
 
-    @Test(arguments: ["hǎo xiàng", "hao xiang", "hǎoxiàng", "haoxiang"])
+    @Test(arguments: ["hǎo xiàng", "hǎoxiàng"])
     func purePinyinGetsWholeHanziAndGloss(text: String) throws {
         #expect(try note(text) == "好像 · to seem like; to look like")
+    }
+
+    @Test(arguments: ["hao xiang", "haoxiang"])
+    func untonedPurePinyinAlsoGetsTheToneMarkedReading(text: String) throws {
+        #expect(try note(text) == "好像 · (hǎoxiàng) · to seem like; to look like")
     }
 
     @Test func wrongOrAmbiguousHanziAbstains() {
@@ -80,7 +87,8 @@ struct StarterVocabularyTests {
     @Test func existingGlossIsPreserved() throws {
         #expect(try note("好 hǎo xiàng to seem like; to look like") == "像")
         #expect(try note("好 hao xiang to look like") == "像")
-        #expect(vocabulary.proposal(forRecognizedText: "好像 hao xiang to seem like; to look like") == nil)
+        #expect(try note("好像 hao xiang to seem like; to look like") == "(hǎoxiàng)")
+        #expect(vocabulary.proposal(forRecognizedText: "好像 hǎoxiàng to seem like; to look like") == nil)
     }
 
     @Test func dictionaryContainsHaoxiang() throws {
@@ -93,7 +101,7 @@ struct StarterVocabularyTests {
         let proposal = try #require(vocabulary.proposal(forRecognizedText: "fuze to be responsible for"))
         #expect(proposal.glossAlreadyWritten)
         let pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "", proposal: proposal)
-        #expect(pending.annotationText == "负责")
+        #expect(pending.annotationText == "负责 · (fùzé)")
     }
 }
 
