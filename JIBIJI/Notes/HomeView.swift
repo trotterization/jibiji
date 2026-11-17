@@ -46,6 +46,9 @@ struct HomeView: View {
     @State private var filter: Filter = .all
     @State private var naming: Naming?
     @State private var nameText = ""
+    private struct PageEditorTarget: Identifiable { var id: String }
+    @State private var editingPage: PageEditorTarget?
+    @State private var editingBackground = false
     /// Bumped whenever the home page appears, so previews and dates are fresh.
     @State private var revision = 0
 
@@ -78,7 +81,10 @@ struct HomeView: View {
         }
         .scrollIndicators(.hidden)
         .safeAreaInset(edge: .top, spacing: 0) { topBar }
-        .background(Theme.surface.ignoresSafeArea())
+        .background {
+            HomeBackdrop(image: notebook.homeAppearance.image, adjustments: notebook.homeAppearance.adjustments,
+                         brightness: notebook.homeAppearance.brightness).ignoresSafeArea()
+        }
         .tint(.primary)
         .animation(Theme.Motion.list, value: notebook.pageIDs)
         .animation(Theme.Motion.list, value: notebook.library)
@@ -89,6 +95,14 @@ struct HomeView: View {
         .onAppear { revision += 1 }
         .onChange(of: notebook.library.folders) { _, folders in
             if case .folder(let name) = filter, !folders.contains(name) { filter = .all }
+        }
+        .sheet(item: $editingPage) { target in
+            HomePageDetailsEditor(notebook: notebook, pageID: target.id)
+                .presentationDetents([.large]).presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $editingBackground) {
+            HomeBackgroundEditor(appearance: notebook.homeAppearance)
+                .presentationDetents([.large]).presentationDragIndicator(.visible)
         }
         .alert(namingTitle, isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
             TextField(namingPlaceholder, text: $nameText)
@@ -108,13 +122,19 @@ struct HomeView: View {
     private var topBar: some View {
         HStack(spacing: 6) {
             Button(action: showCover) {
-                Text("jibiji")
-                    .font(.system(size: 21, weight: .semibold, design: .rounded))
-                    .tracking(-0.7)
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 6)
-                    .frame(height: 40)
-                    .contentShape(Rectangle())
+                HStack(spacing: 9) {
+                    Image("JibijiMark").resizable().scaledToFit()
+                        .frame(width: 30, height: 30)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .accessibilityHidden(true)
+                    Text("jibiji")
+                        .font(.system(size: 21, weight: .semibold, design: .rounded))
+                        .tracking(-0.7)
+                }
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 6)
+                .frame(height: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(PressScaleButtonStyle())
             .accessibilityLabel("Cover")
@@ -122,6 +142,12 @@ struct HomeView: View {
 
             Spacer()
 
+            Button { editingBackground = true } label: {
+                Label("Home Background", systemImage: "photo")
+            }
+            .buttonStyle(BarIconButtonStyle())
+            .accessibilityIdentifier("homeBackgroundButton")
+            .help("Change home background")
             customizeMenu
             Button {
                 newPage()
@@ -137,7 +163,7 @@ struct HomeView: View {
         .padding(.horizontal, 26)
         .padding(.top, 6)
         .padding(.bottom, 10)
-        .background(Theme.surface.opacity(0.94).ignoresSafeArea(edges: .top))
+        .background(.regularMaterial)
     }
 
     private var customizeMenu: some View {
@@ -161,6 +187,8 @@ struct HomeView: View {
                 }
             }
             Section {
+                Button("Home Background…", systemImage: "photo.on.rectangle") { editingBackground = true }
+                    .accessibilityIdentifier("editHomeBackground")
                 Button("Rename Notebook…", systemImage: "character.cursor.ibeam") { name(.notebook) }
                 Button("New Folder…", systemImage: "folder.badge.plus") { name(.newFolder(forPage: nil)) }
             }
@@ -176,12 +204,15 @@ struct HomeView: View {
             Button {
                 name(.notebook)
             } label: {
-                Text(notebook.notebookTitle)
-                    .font(.system(size: 44, weight: .semibold, design: .rounded))
-                    .tracking(-1.4)
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .contentTransition(.opacity)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(notebook.notebookTitle)
+                        .font(.system(size: 44, weight: .semibold, design: .rounded))
+                        .tracking(-1.4)
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                        .contentTransition(.opacity)
+                    Image(systemName: "pencil").font(.system(size: 17)).foregroundStyle(.secondary)
+                }
             }
             .buttonStyle(PressScaleButtonStyle(scale: 0.98))
             .accessibilityHint("Renames the notebook")
@@ -353,23 +384,32 @@ struct HomeView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: cardSize.width, maximum: cardSize.width * 1.35), spacing: 22, alignment: .top)],
                       alignment: .leading, spacing: 26) {
                 ForEach(ids, id: \.self) { id in
-                    pageButton(id) {
-                        VStack(alignment: .leading, spacing: 9) {
+                    VStack(alignment: .leading, spacing: 9) {
+                        pageButton(id) {
                             PagePreview(notebook: notebook, pageID: id, revision: revision)
                                 .overlay(alignment: .topTrailing) { badges(for: id).padding(9) }
+                        }
+                        Button { editingPage = PageEditorTarget(id: id) } label: {
                             HStack(spacing: 6) {
                                 tagDot(for: id)
                                 Text(notebook.title(for: id))
                                     .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(.primary)
                                     .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Image(systemName: "pencil").font(.system(size: 12)).foregroundStyle(.secondary)
                             }
-                            if showsDetails {
-                                detail(for: id)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                            .foregroundStyle(.primary)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Edit details for \(notebook.title(for: id))")
+                        .accessibilityIdentifier("editPageDetails-\(id)")
+                        if showsDetails {
+                            if let summary = notebook.info(for: id).summary {
+                                Text(summary).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2)
                             }
+                            detail(for: id).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
                 }
@@ -377,34 +417,46 @@ struct HomeView: View {
         case .list:
             VStack(spacing: 0) {
                 ForEach(Array(ids.enumerated()), id: \.element) { index, id in
-                    pageButton(id) {
-                        HStack(spacing: 16) {
-                            PagePreview(notebook: notebook, pageID: id, revision: revision, radius: 6)
-                                .frame(width: 48)
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(spacing: 6) {
-                                    tagDot(for: id)
-                                    Text(notebook.title(for: id))
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
+                    HStack(spacing: 0) {
+                        pageButton(id) {
+                            HStack(spacing: 16) {
+                                PagePreview(notebook: notebook, pageID: id, revision: revision, radius: 6)
+                                    .frame(width: 48)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 6) {
+                                        tagDot(for: id)
+                                        Text(notebook.title(for: id))
+                                            .font(.system(size: 15, weight: .semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                    }
+                                    if showsDetails {
+                                        if let summary = notebook.info(for: id).summary {
+                                            Text(summary).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                                        }
+                                        detail(for: id)
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
                                 }
-                                if showsDetails {
-                                    detail(for: id)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
+                                Spacer()
+                                badges(for: id)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
                             }
-                            Spacer()
-                            badges(for: id)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .contentShape(Rectangle())
+                        Button { editingPage = PageEditorTarget(id: id) } label: {
+                            Image(systemName: "pencil").frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Edit details for \(notebook.title(for: id))")
+                        .accessibilityIdentifier("editPageDetails-\(id)")
+                        .padding(.trailing, 8)
                     }
                     if index < ids.count - 1 {
                         Rectangle().fill(Theme.hairline).frame(height: 1).padding(.leading, 80)
@@ -435,6 +487,7 @@ struct HomeView: View {
     private func pageMenu(_ id: String) -> some View {
         let info = notebook.info(for: id)
         Button("Open", systemImage: "arrow.up.right") { openPage(id) }
+        Button("Edit Details…", systemImage: "square.and.pencil") { editingPage = PageEditorTarget(id: id) }
         Button("Rename…", systemImage: "pencil") { name(.page(id)) }
         Button(info.pinned ? "Unpin" : "Pin", systemImage: info.pinned ? "pin.slash" : "pin") { notebook.togglePin(id) }
         Menu("Color", systemImage: "circle.lefthalf.filled") {

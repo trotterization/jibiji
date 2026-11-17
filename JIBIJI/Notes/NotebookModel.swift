@@ -23,6 +23,7 @@ final class NotebookModel {
     var alert: String?
     /// Names, colors, pins, and folders, for the home page.
     private(set) var library = NotebookLibrary()
+    let homeAppearance: HomeAppearanceModel
     /// False when library.json exists but can't be read: it is then never overwritten.
     @ObservationIgnored private var canSaveLibrary = true
 
@@ -35,6 +36,7 @@ final class NotebookModel {
 
     init(store: NoteStore, autosaveDelay: Duration = .milliseconds(700)) {
         self.store = store
+        self.homeAppearance = HomeAppearanceModel(directory: store.directory)
         self.autosaveDelay = autosaveDelay
         reload()
     }
@@ -115,6 +117,20 @@ final class NotebookModel {
     func renamePage(_ pageID: String, to name: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         updatePage(pageID) { $0.name = clean.isEmpty ? nil : String(clean.prefix(60)) }
+    }
+
+    /// Save the page's home details together; a failed write leaves all fields unchanged.
+    func editPage(_ pageID: String, name: String, summary: String, tag: PageTag?, pinned: Bool, folder: String?) {
+        if let folder, !library.folders.contains(folder) { return }
+        updatePage(pageID) { info in
+            let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let description = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            info.name = title.isEmpty ? nil : String(title.prefix(60))
+            info.summary = description.isEmpty ? nil : String(description.prefix(240))
+            info.tag = tag
+            info.pinned = pinned
+            info.folder = folder
+        }
     }
 
     func setTag(_ tag: PageTag?, for pageID: String) {
