@@ -29,3 +29,7 @@ Rename `inference.onnx` to the model name above. For each dictionary, export the
 To run on your own iPad, copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig` (gitignored) and set your own Team ID and bundle ID prefix.
 
 See [CLAUDE.md](CLAUDE.md) for the product and team instructions.
+
+## PaddleOCR v6 pipeline preview
+
+For the optional text-detection and recognition pipeline, run `scripts/setup-paddle-models.sh`, then rebuild. The notebook's **Check recognition** sheet has a v6 comparison and an opt-in engine switch. See [the integration evidence and limitations](docs/recognition/paddle-pipeline.md). This preview does not replace the default reader.

@@ -38,6 +38,9 @@ struct PencilInkLineReader: InkLineReader {
 
     func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
         guard !drawing.strokes.isEmpty else { return [] }
+        if UserDefaults.standard.bool(forKey: "JibijiUsePaddlePipeline") {
+            return try await PaddleTextPipeline.shared.lines(in: drawing)
+        }
         // The simulator exposes English-only stroke recognition. Read rendered ink in
         // Chinese instead of interpreting Hanzi as English letters. Also works on older OSes.
         guard #available(iOS 27.0, *),
