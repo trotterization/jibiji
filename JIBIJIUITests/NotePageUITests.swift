@@ -52,7 +52,7 @@ final class NotePageUITests: XCTestCase {
         draw(in: app, from: CGVector(dx: 0.30, dy: 0.50), to: CGVector(dx: 0.60, dy: 0.50))
         waitForLabel("2 strokes · Saved", on: status)
 
-        // Undo and redo are the buttons in the system tool palette.
+        // Undo and redo are the buttons in the jibiji tool bar.
         let undo = app.buttons["Undo"].firstMatch
         XCTAssertTrue(undo.waitForEnabled(), app.debugDescription)
         undo.tap()
@@ -134,13 +134,16 @@ final class NotePageUITests: XCTestCase {
         app.buttons["Check recognition"].tap()
         let available = app.descendants(matching: .any)["recognizerAvailable"]
         let unavailable = app.descendants(matching: .any)["recognizerUnavailable"]
+        // The Form loads rows lazily; once the image-recognition section appears, the status row
+        // can sit below the fold. The recognized-text row at the top also means the check finished.
+        let recognized = app.descendants(matching: .any)["recognizedText"]
         let deadline = Date.now.addingTimeInterval(30)
-        while !available.exists, !unavailable.exists, Date.now < deadline {
-            _ = available.waitForExistence(timeout: 1)
+        while !available.exists, !unavailable.exists, !recognized.exists, Date.now < deadline {
+            _ = recognized.waitForExistence(timeout: 1)
         }
-        XCTAssertTrue(available.exists || unavailable.exists, "The recognition check never finished")
-        // The tool palette hides under the sheet, so it can't change ink the student can't see.
-        XCTAssertFalse(paletteUndo.exists && paletteUndo.isHittable, "The tool palette is still usable above the sheet")
+        XCTAssertTrue(available.exists || unavailable.exists || recognized.exists, "The recognition check never finished")
+        // The tool bar hides under the sheet, so it can't change ink the student can't see.
+        XCTAssertFalse(paletteUndo.exists && paletteUndo.isHittable, "The tool bar is still usable above the sheet")
         attachScreenshot(of: app, named: "Recognition check")
 
         app.buttons["Done"].tap()
@@ -148,14 +151,13 @@ final class NotePageUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["pageStatus"].label, "1 stroke · Saved")
         // And it comes back when the sheet closes.
         let returned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND hittable == true"), object: paletteUndo)
-        XCTAssertEqual(XCTWaiter().wait(for: [returned], timeout: 5), .completed, "The tool palette didn't come back")
+        XCTAssertEqual(XCTWaiter().wait(for: [returned], timeout: 5), .completed, "The tool bar didn't come back")
     }
 
     // MARK: - Helpers
 
     /// Launches with a disposable notebook. Test notebooks start with the pen whatever tool
-    /// PencilKit remembered (the tests never tap palette tools: in the Simulator, drags made
-    /// right after a palette tool switch don't render).
+    /// was last used, and never save tool changes.
     @MainActor
     private func launch(notebook: String, reset: Bool, file: StaticString = #filePath, line: UInt = #line) -> XCUIApplication {
         let app = XCUIApplication()
@@ -167,8 +169,11 @@ final class NotePageUITests: XCTestCase {
         let open = app.buttons["openNotebook"]
         XCTAssertTrue(open.waitForExistence(timeout: 10), "The notebook cover didn't appear")
         open.tap()
+        let resume = app.buttons["continueWriting"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 10), "The home page didn't appear")
+        resume.tap()
         let pen = app.buttons["Pen"].firstMatch
-        XCTAssertTrue(pen.waitForExistence(timeout: 10), "The tool palette isn't showing", file: file, line: line)
+        XCTAssertTrue(pen.waitForExistence(timeout: 10), "The tool bar isn't showing", file: file, line: line)
         XCTAssertTrue(pen.isSelected, "A test notebook should start with the pen", file: file, line: line)
         return app
     }

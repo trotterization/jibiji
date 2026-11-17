@@ -36,6 +36,8 @@ final class NotePageModel {
     @ObservationIgnored private let autosaveDelay: Duration
     @ObservationIgnored private var autosaveTask: Task<Void, Never>?
     @ObservationIgnored private var hasUnsavedChanges = false
+    /// Ink not written to disk yet.
+    var hasPendingChanges: Bool { hasUnsavedChanges }
 
     init(
         pageID: String,
@@ -43,11 +45,25 @@ final class NotePageModel {
         autosaveDelay: Duration = .milliseconds(700),
         lineReader: (any InkLineReader)? = nil
     ) {
+        let suggestionReader: any InkLineReader
+        if let lineReader {
+            suggestionReader = lineReader
+        } else {
+            #if DEBUG
+            if store.isTestNotebook && UserDefaults.standard.bool(forKey: "JIBIJIReplacementFixture") {
+                suggestionReader = ReplacementFixtureReader()
+            } else {
+                suggestionReader = PencilInkLineReader(mode: .suggestions)
+            }
+            #else
+            suggestionReader = PencilInkLineReader(mode: .suggestions)
+            #endif
+        }
         self.pageID = pageID
         self.suggestions = PageSuggestionModel(
             pageID: pageID,
             store: SuggestionStore(directory: store.directory),
-            reader: lineReader ?? PencilInkLineReader(mode: .suggestions)
+            reader: suggestionReader
         )
         self.flashcards = PageFlashcards(
             pageID: pageID,
@@ -93,6 +109,108 @@ final class NotePageModel {
         hasUnsavedChanges = true
         state = .unsaved
         scheduleAutosave()
+    }
+
+    /// Accept a reading as actual, erasable ink in the source region.
+    @discardableResult
+    func replaceSuggestion(_ id: UUID, with text: String) -> Bool {
+        guard isEditable, let item = suggestions.pending.first(where: { $0.id == id }) else { return false }
+        let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let indices = drawing.strokes.indices.filter { item.sourceStrokeIDs.contains(InkSelection.identity(drawing.strokes[$0])) }
+        guard !indices.isEmpty else {
+            notice = "Couldn't match this suggestion to the original strokes. Try reading the page again."
+            return false
+        }
+        let originals = indices.map { drawing.strokes[$0] }
+        let sourceBounds = originals.dropFirst().reduce(originals[0].renderBounds) { $0.union($1.renderBounds) }
+        guard let replacement = CleanHandwriting.drawing(text: cleanText, in: sourceBounds,
+                                                        pen: .matching(originals)) else {
+            notice = "This replacement couldn't be drawn. Your writing is unchanged."
+            return false
+        }
+        let recovery = InkReplacement(originalInk: PKDrawing(strokes: originals).dataRepresentation(),
+                                      originalIndices: indices,
+                                      replacementStrokeIDs: Set(replacement.strokes.map(InkSelection.identity)))
+        let remaining = suggestions.pending.filter { $0.id != id }
+        guard suggestions.acceptReplacement(item, text: cleanText, bounds: sourceBounds, recovery: recovery) else { return false }
+        let removed = Set(indices)
+        var updated = drawing.strokes.enumerated().filter { !removed.contains($0.offset) }.map(\.element)
+        updated.insert(contentsOf: replacement.strokes, at: min(indices[0], updated.count))
+        drawingDidChange(PKDrawing(strokes: updated))
+        suggestions.keepUnchangedPending(remaining, excluding: sourceBounds)
+        saveIfNeeded()
+        return true
+    }
+
+    /// Recovery works after relaunch and preserves ink added after the replacement.
+    @discardableResult
+    func restoreOriginal(_ noteID: UUID) -> Bool {
+        guard isEditable, let note = suggestions.annotations.first(where: { $0.id == noteID }),
+              let recovery = note.replacement,
+              let original = try? PKDrawing(data: recovery.originalInk),
+              PageSuggestionModel.isVisible(note, in: drawing) else { return false }
+        var strokes = drawing.strokes.filter { !recovery.replacementStrokeIDs.contains(InkSelection.identity($0)) }
+        for (stroke, index) in zip(original.strokes, recovery.originalIndices) {
+            strokes.insert(stroke, at: min(index, strokes.count))
+        }
+        drawingDidChange(PKDrawing(strokes: strokes))
+        saveIfNeeded()
+        // Keep the receipt for native redo/recovery; the source IDs determine visibility.
+        return true
+    }
+
+    func deleteReplacement(_ id: UUID) {
+        guard let note = suggestions.annotations.first(where: { $0.id == id }), let replacement = note.replacement else { return }
+        drawingDidChange(PKDrawing(strokes: drawing.strokes.filter { !replacement.replacementStrokeIDs.contains(InkSelection.identity($0)) }))
+        saveIfNeeded()
+    }
+
+    /// Moves or resizes a replacement. Points move; widths stay, so it keeps matching the pen.
+    /// Earlier stroke IDs stay on the receipt, so native undo, Restore, and visibility keep working.
+    @discardableResult
+    func adjustReplacement(_ noteID: UUID, by transform: CGAffineTransform) -> Bool {
+        guard isEditable, transform != .identity,
+              let note = suggestions.annotations.first(where: { $0.id == noteID }),
+              var recovery = note.replacement else { return false }
+        let indices = drawing.strokes.indices.filter { recovery.replacementStrokeIDs.contains(InkSelection.identity(drawing.strokes[$0])) }
+        guard !indices.isEmpty else { return false }
+        let moved = indices.map { index -> PKStroke in
+            let stroke = drawing.strokes[index]
+            // Older replacements are masked glyph outlines: move those as a whole.
+            guard stroke.mask == nil else {
+                var copy = stroke
+                copy.transform = stroke.transform.concatenating(transform)
+                return copy
+            }
+            let full = stroke.transform.concatenating(transform)
+            let points = stroke.path.map { point in
+                PKStrokePoint(location: point.location.applying(full), timeOffset: point.timeOffset, size: point.size,
+                              opacity: point.opacity, force: point.force, azimuth: point.azimuth, altitude: point.altitude)
+            }
+            return PKStroke(ink: stroke.ink, path: PKStrokePath(controlPoints: points, creationDate: stroke.path.creationDate))
+        }
+        guard let canonical = try? PKDrawing(data: PKDrawing(strokes: moved).dataRepresentation()),
+              canonical.strokes.count == moved.count else { return false }
+        recovery.replacementStrokeIDs.formUnion(canonical.strokes.map(InkSelection.identity))
+        let bounds = canonical.strokes.dropFirst().reduce(canonical.strokes[0].renderBounds) { $0.union($1.renderBounds) }
+        guard suggestions.updateReplacement(noteID, anchor: bounds, recovery: recovery) else { return false }
+        var strokes = drawing.strokes
+        for (index, stroke) in zip(indices, canonical.strokes) { strokes[index] = stroke }
+        drawingDidChange(PKDrawing(strokes: strokes))
+        saveIfNeeded()
+        return true
+    }
+
+    /// Where a replacement's ink is now, in page coordinates.
+    func replacementBounds(_ note: AcceptedAnnotation) -> CGRect? {
+        guard let ids = note.replacement?.replacementStrokeIDs else { return nil }
+        let strokes = drawing.strokes.filter { ids.contains(InkSelection.identity($0)) }
+        guard let first = strokes.first else { return nil }
+        return strokes.dropFirst().reduce(first.renderBounds) { $0.union($1.renderBounds) }
+    }
+
+    var latestVisibleReplacement: AcceptedAnnotation? {
+        suggestions.annotations.last { $0.replacement != nil && PageSuggestionModel.isVisible($0, in: drawing) }
     }
 
     /// Writes pending ink now. Safe to call at any time; does nothing when there is nothing to save.
@@ -155,3 +273,12 @@ extension Logger {
     /// A fixed subsystem, so Console filters work whatever bundle ID prefix a teammate signs with.
     static let notes = Logger(subsystem: "com.trotterization.jibiji", category: "notes")
 }
+
+#if DEBUG
+/// Deterministic UI-test provider, restricted to disposable test notebooks.
+private struct ReplacementFixtureReader: InkLineReader {
+    func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
+        drawing.strokes.isEmpty ? [] : [RecognizedLine(text: "大", bounds: drawing.bounds, readings: ["大", "牛", "我"])]
+    }
+}
+#endif
