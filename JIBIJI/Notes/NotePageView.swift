@@ -5,8 +5,12 @@ import SwiftUI
 struct NotePageView: View {
     @Bindable var notebook: NotebookModel
     @State private var canvas = CanvasController()
+    #if DEBUG
+    @State private var showsAnalysis = false
+    #else
     @State private var showsRecognitionCheck = false
     @State private var showsCards = false
+    #endif
 
     var body: some View {
         NavigationStack {
@@ -25,6 +29,14 @@ struct NotePageView: View {
         } message: {
             Text(notebook.alert ?? "")
         }
+        #if DEBUG
+        .sheet(isPresented: $showsAnalysis, onDismiss: canvas.focus) {
+            // Always the page that was active when the button was tapped (the sheet covers the menu).
+            if let page = currentPage {
+                NoteAnalysisView(page: page)
+            }
+        }
+        #else
         .sheet(isPresented: $showsCards, onDismiss: canvas.focus) {
             if let page = currentPage {
                 FlashcardsView(page: page)
@@ -34,6 +46,7 @@ struct NotePageView: View {
             // Always the page that was active when the button was tapped (the sheet covers the menu).
             RecognitionCheckView(drawing: currentPage?.drawing ?? PKDrawing())
         }
+        #endif
     }
 
     private var currentPage: NotePageModel? { notebook.currentPage }
@@ -137,6 +150,16 @@ struct NotePageView: View {
             }
             .disabled(!(currentPage?.isEditable ?? false))
             .accessibilityIdentifier("suggestButton")
+            #if DEBUG
+            // One Debug screen replaces the separate Cards and Check recognition buttons.
+            Button("Note analysis", systemImage: "text.viewfinder") {
+                currentPage?.saveIfNeeded()
+                canvas.resignFocus()
+                showsAnalysis = true
+            }
+            .disabled(!(currentPage?.isEditable ?? false))
+            .accessibilityIdentifier("noteAnalysisButton")
+            #else
             Button("Cards", systemImage: "rectangle.on.rectangle") {
                 currentPage?.saveIfNeeded()
                 canvas.resignFocus()
@@ -150,6 +173,7 @@ struct NotePageView: View {
                 showsRecognitionCheck = true
             }
             .disabled(!(currentPage?.isEditable ?? false))
+            #endif
         }
     }
 

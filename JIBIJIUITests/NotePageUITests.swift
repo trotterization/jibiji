@@ -131,17 +131,13 @@ final class NotePageUITests: XCTestCase {
         let paletteUndo = app.buttons["Undo"].firstMatch
         XCTAssertTrue(paletteUndo.waitForExistence(timeout: 5))
 
-        app.buttons["Check recognition"].tap()
-        let available = app.descendants(matching: .any)["recognizerAvailable"]
-        let unavailable = app.descendants(matching: .any)["recognizerUnavailable"]
-        let deadline = Date.now.addingTimeInterval(30)
-        while !available.exists, !unavailable.exists, Date.now < deadline {
-            _ = available.waitForExistence(timeout: 1)
-        }
-        XCTAssertTrue(available.exists || unavailable.exists, "The recognition check never finished")
+        // Debug builds have one automatic Note Analysis screen in place of Cards and Check recognition.
+        app.buttons["noteAnalysisButton"].tap()
+        let done = app.descendants(matching: .any)["analysisDone"]
+        XCTAssertTrue(done.waitForExistence(timeout: 30), "The note analysis never finished")
         // The tool palette hides under the sheet, so it can't change ink the student can't see.
         XCTAssertFalse(paletteUndo.exists && paletteUndo.isHittable, "The tool palette is still usable above the sheet")
-        attachScreenshot(of: app, named: "Recognition check")
+        attachScreenshot(of: app, named: "Note analysis")
 
         app.buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["pageStatus"].waitForExistence(timeout: 5))
