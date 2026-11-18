@@ -217,7 +217,7 @@
 			mainGroup = 4A1B00000000000000000002;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				4A1B00000000000000000403 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
+				4A1B00000000000000000403 /* XCLocalSwiftPackageReference "Vendor/onnxruntime-swift-package-manager" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4A1B00000000000000000003 /* Products */;
@@ -474,21 +474,17 @@
 		};
 /* End XCBuildConfiguration section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		4A1B00000000000000000403 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/microsoft/onnxruntime-swift-package-manager";
-			requirement = {
-				kind = exactVersion;
-				version = 1.24.2;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		4A1B00000000000000000403 /* XCLocalSwiftPackageReference "Vendor/onnxruntime-swift-package-manager" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "Vendor/onnxruntime-swift-package-manager";
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		4A1B00000000000000000402 /* OnnxRuntimeBindings */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 4A1B00000000000000000403 /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */;
+			package = 4A1B00000000000000000403 /* XCLocalSwiftPackageReference "Vendor/onnxruntime-swift-package-manager" */;
 			productName = onnxruntime;
 		};
 /* End XCSwiftPackageProductDependency section */

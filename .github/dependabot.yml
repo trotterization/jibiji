@@ -1,12 +1,7 @@
 version: 2
 updates:
-  # Xcode manages Swift package requirements in JIBIJI.xcodeproj.
-  - package-ecosystem: "swift"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+  # The only Swift package (ONNX Runtime) is vendored in Vendor/, because its
+  # upstream repository is gone, so there is nothing for Dependabot to update.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
