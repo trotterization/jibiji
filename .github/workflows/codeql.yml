@@ -1,0 +1,58 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "43 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze Swift
+    runs-on: macos-26-intel
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    env:
+      # CodeQL's traced Swift builds require Xcode 26 rather than Xcode 27.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: swift
+          build-mode: manual
+      # Explicit builds support Xcode's synchronized source groups, which the
+      # Swift autobuilder currently does not detect in this project.
+      - name: Build app for analysis
+        run: |
+          xcodebuild clean build \
+            -project JIBIJI.xcodeproj \
+            -scheme JIBIJI \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/CodeQLDerivedData" \
+            -disableAutomaticPackageResolution \
+            -skipPackageUpdates \
+            -jobs 2 \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Analyze and upload results
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:swift
