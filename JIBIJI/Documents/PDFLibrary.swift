@@ -10,6 +10,7 @@ struct PDFItem: Codable, Identifiable, Hashable {
     var title: String
     var pageCount: Int
     var text: String
+    var searchVersion: Int? = nil
 }
 
 struct PDFPageInk: Codable {
@@ -50,36 +51,6 @@ enum CoordinatedFiles {
     }
 }
 
-actor PDFTextReader {
-    static let shared = PDFTextReader()
-    struct Match: Sendable, Identifiable {
-        var page: Int
-        var range: NSRange
-        var id: String { "\(page)-\(range.location)" }
-    }
-    func text(at url: URL) throws -> String {
-        guard let document = PDFDocument(url: url) else { throw DocumentProblem.invalidPDF }
-        return String((document.string ?? "").prefix(2_000_000))
-    }
-    func find(_ query: String, at url: URL) throws -> [Match] {
-        guard !query.isEmpty, let document = PDFDocument(url: url) else { return [] }
-        var matches: [Match] = []
-        for index in 0..<document.pageCount {
-            try Task.checkCancellation()
-            let text = (document.page(at: index)?.string ?? "") as NSString
-            var range = NSRange(location: 0, length: text.length)
-            while range.length > 0, matches.count < 1000 {
-                let found = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive], range: range)
-                if found.location == NSNotFound { break }
-                matches.append(Match(page: index, range: found))
-                let end = NSMaxRange(found)
-                range = NSRange(location: end, length: text.length - end)
-            }
-        }
-        return matches
-    }
-}
-
 @MainActor @Observable
 final class PDFLibrary {
     let directory: URL
@@ -87,6 +58,10 @@ final class PDFLibrary {
     private(set) var items: [PDFItem] = []
     var problem: String?
     private(set) var importing = false
+    private(set) var indexingSearch = false
+    private(set) var searchProgress: String?
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var searchGeneration = UUID()
     @ObservationIgnored var onChange: (() -> Void)?
     @ObservationIgnored private var models: [UUID: PDFNotebook] = [:]
     var hasPendingInk: Bool { models.values.contains { $0.pending } }
@@ -148,19 +123,54 @@ final class PDFLibrary {
         importing = true; defer { importing = false }
         do {
             let data = try await Task.detached { try CoordinatedFiles.read(url) }.value
-            var item = try importPDF(data: data, title: url.deletingPathExtension().lastPathComponent)
-            item.text = try await PDFTextReader.shared.text(at: source(item.id))
-            try save(item); reload(); onChange?()
-            return item
+            let item = try importPDF(data: data, title: url.deletingPathExtension().lastPathComponent)
+            do { try await refreshSearch(for: item.id) }
+            catch { problem = "The PDF was imported, but search preparation failed: \(error.localizedDescription)" }
+            return items.first { $0.id == item.id } ?? item
         } catch { problem = error.localizedDescription; return nil }
     }
 
     func rename(_ item: PDFItem, title: String) throws {
-        var updated = item
+        var updated = items.first { $0.id == item.id } ?? item
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         updated.title = String(title.prefix(120))
         try save(updated); reload(); onChange?()
+    }
+
+    func refreshSearch(for id: UUID, rebuild: Bool = false) async throws {
+        let url = source(id)
+        if rebuild { try await PDFTextReader.shared.reset(at: url) }
+        let text = try await PDFTextReader.shared.text(at: url, forceOCR: rebuild)
+        try Task.checkCancellation()
+        // A rename during OCR must survive the asynchronous index update.
+        guard var current = items.first(where: { $0.id == id }) else { return }
+        current.text = text; current.searchVersion = PDFTextReader.indexVersion
+        try save(current); reload(); onChange?()
+    }
+
+    @discardableResult
+    func indexSearchableText() -> Task<Void, Never> {
+        if let searchTask, indexingSearch { return searchTask }
+        let generation = UUID(); searchGeneration = generation
+        indexingSearch = true
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { if searchGeneration == generation { indexingSearch = false; searchProgress = nil } }
+            for item in items where item.searchVersion != PDFTextReader.indexVersion {
+                if Task.isCancelled { return }
+                searchProgress = "Preparing search: " + item.title
+                do { try await refreshSearch(for: item.id) }
+                catch is CancellationError { return }
+                catch { problem = "Couldn't index \(item.title): \(error.localizedDescription)" }
+            }
+        }
+        searchTask = task
+        return task
+    }
+    func cancelSearchIndexing() {
+        searchTask?.cancel(); searchTask = nil
+        searchGeneration = UUID(); indexingSearch = false; searchProgress = nil
     }
 
     private func save(_ item: PDFItem) throws {

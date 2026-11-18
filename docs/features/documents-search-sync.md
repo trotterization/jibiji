@@ -14,7 +14,13 @@ Open **PDF Documents** on the notebook home screen and choose **Import PDF**. Fi
 
 Annotations are saved as separate PencilKit drawings for each page. A pause, leaving the document, or backgrounding saves pending annotations. An unreadable annotation file pauses editing of that page instead of replacing its ink. Failed saves retain a live buffer across document navigation, with retry on reopen or backgrounding.
 
-Find in PDF searches the document's existing text, with previous/next match navigation. Scans without an embedded text layer need OCR before their printed text can be searched; this version does not add OCR to scanned PDFs. The document library also searches titles and extracted PDF text.
+Find in PDF searches selectable text and uses on-device Vision OCR for image-only pages or sparse text layers such as page numbers. English, Simplified Chinese, and Traditional Chinese are requested. Previous/next controls navigate to matches; recognized words are highlighted using a view overlay, which does not become a PDF annotation.
+
+Imports prepare searchable text automatically. Opening the library also indexes older documents, with progress and a Stop Indexing control. Use **Document actions → Rebuild OCR Search Index** to rescan a document, including pages that mix a full text layer with images. Recognition can miss or misread words.
+
+OCR runs away from the UI actor and saves completed pages incrementally in a protected local cache keyed to the source PDF's SHA-256. Searches reuse that cache after relaunch; changed sources and damaged cache pages are reindexed. Canceling stops further pages while retaining completed work. Search results are capped at 1,000, with a plus sign when the cap is reached. Library search includes recognized scan text as well as titles and native PDF text.
+
+OCR provides search inside Jibiji; it does not rewrite the original PDF or embed a new text layer into image-only exports. The derived OCR page cache is excluded from folder sync; recognized library text travels with existing document metadata.
 
 **Document actions → Export Annotated PDF** creates a standard PDF with the ink flattened onto the original pages. Text remains searchable and URL/page links are retained. Keep the Jibiji data to continue editing individual strokes. A renamed document keeps its original content.
 
@@ -38,7 +44,7 @@ Sync currently materializes record data in memory. Large-library memory usage, p
 
 ## Validation
 
-Tests use public, generated PDFs and synthetic ink. Unit coverage includes source preservation, annotation reopen/export, searchable text and links, rotated output sizes, stale handwriting indexes, two-replica convergence, concurrent edits, page-ID remapping, PDF/card sync, corrupt downloads, interrupted-import recovery, reconnection after reinstall, and failed annotation-save retries.
+Tests use public, generated PDFs and synthetic ink. Unit coverage includes source preservation, annotation reopen/export, searchable text and links, rotated output sizes, stale handwriting indexes, two-replica convergence, concurrent edits, page-ID remapping, PDF/card sync, corrupt downloads, interrupted-import recovery, reconnection after reinstall, failed annotation-save retries, real image-only/mixed PDF OCR, Mandarin search, cropped/rotated match locations, source replacement, cache reuse/recovery, and cancellation.
 
 `DocumentWorkspaceUITests` exercises real PDFKit/PencilKit views, search, annotation persistence, and reading-mode protection in disposable Debug notebooks. The generated textbook fixture is available only when both `-JIBIJIStoreName` and `-JIBIJIPDFFixture YES` are supplied in Debug.
 

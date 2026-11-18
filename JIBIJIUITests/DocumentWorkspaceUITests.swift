@@ -49,9 +49,35 @@ final class DocumentWorkspaceUITests: XCTestCase {
         attach(app, "PDF annotations after relaunch")
     }
 
-    @MainActor private func home(_ name: String, reset: Bool) -> XCUIApplication {
+    @MainActor func testScannedPDFSearchAndHighlightSurviveRelaunch() {
+        var app = home("scanned-pdf", reset: true, scanned: true)
+        app.buttons["openPDFLibrary"].tap()
+        let document = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "pdfDocument-")).firstMatch
+        XCTAssertTrue(document.waitForExistence(timeout: 10))
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap(); search.typeText("orchid")
+        XCTAssertTrue(document.waitForExistence(timeout: 45))
+        document.tap()
+        let field = app.textFields["pdfSearch"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap(); field.typeText("orchid")
+        waitLabel("1/1", app.staticTexts["pdfSearchCount"], timeout: 45)
+        attach(app, "Scanned PDF OCR highlight")
+        app.terminate()
+        app = home("scanned-pdf", reset: false, scanned: true)
+        openPDF(app)
+        let reopened = app.textFields["pdfSearch"]
+        XCTAssertTrue(reopened.waitForExistence(timeout: 10))
+        reopened.tap(); reopened.typeText("laboratory")
+        waitLabel("1/1", app.staticTexts["pdfSearchCount"], timeout: 20)
+        attach(app, "Scanned PDF cached search")
+    }
+
+    @MainActor private func home(_ name: String, reset: Bool, scanned: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-JIBIJIStoreName", "uitest-\(name)", "-JIBIJIPDFFixture", "YES"]
+        if scanned { app.launchArguments += ["-JIBIJIScannedPDFFixture", "YES"] }
         if reset { app.launchArguments += ["-JIBIJIResetStore", "YES"] }
         app.launch()
         XCTAssertTrue(app.buttons["openNotebook"].waitForExistence(timeout: 10))
@@ -68,9 +94,9 @@ final class DocumentWorkspaceUITests: XCTestCase {
     @MainActor private func draw(_ view: XCUIElement, y: CGFloat) {
         view.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: y)).press(forDuration: 0.1, thenDragTo: view.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: y)))
     }
-    @MainActor private func waitLabel(_ value: String, _ element: XCUIElement) {
+    @MainActor private func waitLabel(_ value: String, _ element: XCUIElement, timeout: TimeInterval = 15) {
         let predicate = NSPredicate(format: "label == %@", value)
-        XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: element)], timeout: 15) == .completed, element.debugDescription)
+        XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: element)], timeout: timeout) == .completed, element.debugDescription)
     }
     @MainActor private func waitValue(_ value: String, _ element: XCUIElement) {
         let predicate = NSPredicate(format: "value == %@", value)

@@ -16,7 +16,7 @@ struct PDFLibraryView: View {
                     ContentUnavailableView("Your PDFs", systemImage: "doc.richtext", description: Text("Import a textbook, paper, or planner to read and annotate."))
                 }
                 ForEach(library.items.filter { query.isEmpty || ($0.title + " " + $0.text).localizedStandardContains(query) }) { item in
-                    NavigationLink(value: item) {
+                    NavigationLink(value: item.id) {
                         Label { VStack(alignment: .leading) {
                             Text(item.title).font(.headline)
                             Text("\(item.pageCount) pages").font(.caption).foregroundStyle(.secondary)
@@ -24,6 +24,12 @@ struct PDFLibraryView: View {
                     }.accessibilityIdentifier("pdfDocument-\(item.id)")
                 }
                 if library.importing { ProgressView("Importing PDF…") }
+                if library.indexingSearch {
+                    ProgressView(library.searchProgress ?? "Preparing scanned text…").accessibilityIdentifier("pdfLibraryIndexProgress")
+                    Button("Stop Indexing") { library.cancelSearchIndexing() }
+                } else {
+                    Button("Update Search Index", systemImage: "text.viewfinder") { library.indexSearchableText() }
+                }
                 if library.hasPendingInk { Text("Some annotations aren't saved yet. Reopen their document to retry.").foregroundStyle(.red) }
                 if let problem = library.problem { Text(problem).foregroundStyle(.red) }
             }
@@ -33,7 +39,13 @@ struct PDFLibraryView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) { Button("Import PDF", systemImage: "square.and.arrow.down") { importing = true }.disabled(library.importing).accessibilityIdentifier("importPDF") }
             }
-            .navigationDestination(for: PDFItem.self) { item in PDFDocumentScreen(item: item, library: library) }
+            .navigationDestination(for: UUID.self) { id in
+                if let item = library.items.first(where: { $0.id == id }) { PDFDocumentScreen(item: item, library: library) }
+            }
+            .task {
+                let work = library.indexSearchableText()
+                await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+            }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf]) { result in
                 if case .success(let url) = result { Task { _ = await library.importPDF(from: url) } }
                 if case .failure(let error) = result { library.problem = error.localizedDescription }
@@ -71,6 +83,9 @@ struct PDFWorkspaceView: View {
     @State private var results: [PDFTextReader.Match] = []
     @State private var matchIndex = 0
     @State private var searchProblem: String?
+    @State private var searching = false
+    @State private var searchToken = UUID()
+    @State private var rebuildingSearch = false
     @State private var export: PDFExport?
     @State private var exporting = false
     @State private var renaming = false
@@ -83,11 +98,17 @@ struct PDFWorkspaceView: View {
                 Image(systemName: "magnifyingglass")
                 TextField("Find in PDF", text: $query).focused($searchFocused).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("pdfSearch")
                 if !query.isEmpty {
-                    Text("\(results.isEmpty ? 0 : matchIndex + 1)/\(results.count)").font(.caption).monospacedDigit().accessibilityIdentifier("pdfSearchCount")
+                    Text("\(results.isEmpty ? 0 : matchIndex + 1)/\(results.count)\(results.count == 1000 ? "+" : "")").font(.caption).monospacedDigit().accessibilityIdentifier("pdfSearchCount")
                     Button("Previous match", systemImage: "chevron.up") { moveMatch(-1) }.disabled(results.isEmpty)
                     Button("Next match", systemImage: "chevron.down") { moveMatch(1) }.disabled(results.isEmpty)
                 }
             }.buttonStyle(BarIconButtonStyle()).padding(.horizontal)
+            if searching || rebuildingSearch {
+                HStack {
+                    ProgressView(searching ? "Searching scanned text…" : "Recognizing page images…")
+                    if searching { Button("Cancel Search") { query = "" } }
+                }.font(.caption).padding(6).accessibilityIdentifier("pdfSearchProgress")
+            }
             PDFInkView(notebook: notebook, controller: controller, reading: reading,
                        selection: results.indices.contains(matchIndex) ? results[matchIndex] : nil)
                 .accessibilityIdentifier("pdfCanvas")
@@ -109,6 +130,8 @@ struct PDFWorkspaceView: View {
                     searchFocused = false; notebook.save(); reading.toggle(); controller.setReading(reading)
                 }.accessibilityIdentifier("pdfReadingMode").accessibilityValue(reading ? "Reading" : "Writing")
                 Menu {
+                    Button("Rebuild OCR Search Index", systemImage: "text.viewfinder") { rebuildingSearch = true }
+                        .disabled(rebuildingSearch).accessibilityIdentifier("rebuildPDFSearch")
                     Button("Rename PDF", systemImage: "pencil") { title = currentTitle; renaming = true }
                     Button("Export Annotated PDF", systemImage: "square.and.arrow.up") {
                         do { notebook.save(); export = PDFExport(data: try notebook.export()); exporting = true }
@@ -125,7 +148,23 @@ struct PDFWorkspaceView: View {
         .fileExporter(isPresented: $exporting, document: export, contentType: .pdf, defaultFilename: currentTitle + "-annotated") { result in
             if case .failure(let error) = result { notebook.problem = error.localizedDescription }
         }
+        .task(id: rebuildingSearch) {
+            guard rebuildingSearch else { return }
+            defer { rebuildingSearch = false }
+            do {
+                try await library.refreshSearch(for: notebook.item.id, rebuild: true)
+                if !query.isEmpty {
+                    let requestedQuery = query, token = searchToken
+                    let found = try await PDFTextReader.shared.find(requestedQuery, at: notebook.source)
+                    try Task.checkCancellation()
+                    if query == requestedQuery, searchToken == token { results = found; matchIndex = 0 }
+                }
+            } catch is CancellationError {} catch { searchProblem = error.localizedDescription }
+        }
         .task(id: query) {
+            let token = UUID(); searchToken = token
+            searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            defer { if searchToken == token { searching = false } }
             results = []; matchIndex = 0; searchProblem = nil
             guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             do {
@@ -175,11 +214,18 @@ struct PDFInkView: UIViewRepresentable {
         }
         if coordinator.selectionID != selection?.id {
             coordinator.selectionID = selection?.id
-            if let selection, let page = notebook.document.page(at: selection.page), let highlight = page.selection(for: selection.range) {
+            coordinator.selection = selection
+            if let selection, let page = notebook.document.page(at: selection.page), let range = selection.range, let highlight = page.selection(for: range) {
                 highlight.color = .systemYellow
                 view.highlightedSelections = [highlight]
                 view.go(to: highlight)
-            } else { view.highlightedSelections = nil }
+            } else {
+                view.highlightedSelections = nil
+                if let selection, let bounds = selection.bounds, let page = notebook.document.page(at: selection.page) {
+                    view.go(to: bounds.insetBy(dx: -12, dy: -20), on: page)
+                }
+            }
+            coordinator.updateSearchHighlight(in: view)
         }
     }
     static func dismantleUIView(_ view: PDFView, coordinator: Coordinator) {
@@ -193,6 +239,8 @@ struct PDFInkView: UIViewRepresentable {
         let controller: CanvasController
         var reading = true
         var selectionID: String?
+        var selection: PDFTextReader.Match?
+        private var searchHighlights: [CAShapeLayer] = []
         var canvases: [Int: NoteCanvasView] = [:]
         init(notebook: PDFNotebook, controller: CanvasController) {
             self.notebook = notebook; self.controller = controller
@@ -206,6 +254,19 @@ struct PDFInkView: UIViewRepresentable {
                     canvas.drawingPolicy = controller.canvasView?.drawingPolicy ?? .pencilOnly
                 }
             }
+        }
+
+        func updateSearchHighlight(in view: PDFView) {
+            searchHighlights.forEach { $0.removeFromSuperlayer() }; searchHighlights.removeAll()
+            guard let selection, let bounds = selection.bounds,
+                  let page = notebook.document.page(at: selection.page), let canvas = canvases[selection.page], !canvas.bounds.isEmpty else { return }
+            let rectangle = canvas.convert(view.convert(bounds, from: page), from: view)
+            let layer = CAShapeLayer()
+            layer.path = UIBezierPath(roundedRect: rectangle.insetBy(dx: -2, dy: -1), cornerRadius: 2).cgPath
+            layer.fillColor = UIColor.systemYellow.withAlphaComponent(0.35).cgColor
+            layer.strokeColor = UIColor.systemOrange.withAlphaComponent(0.7).cgColor
+            layer.lineWidth = 0.7; layer.zPosition = 1000
+            canvas.layer.addSublayer(layer); searchHighlights.append(layer)
         }
 
         func pdfView(_ view: PDFView, overlayViewFor page: PDFPage) -> UIView? {
@@ -233,6 +294,7 @@ struct PDFInkView: UIViewRepresentable {
             controller.tools.load(persisting: !notebook.usesTestNotebook)
             controller.attach(canvas)
             controller.setReading(reading)
+            updateSearchHighlight(in: pdfView)
         }
         func pdfView(_ pdfView: PDFView, willEndDisplayingOverlayView overlayView: UIView, for page: PDFPage) {
             notebook.save()
