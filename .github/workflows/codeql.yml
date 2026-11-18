@@ -1,0 +1,76 @@
+name: Code scanning
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "43 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-actions:
+    name: CodeQL Actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: actions
+          build-mode: none
+      - name: Analyze and upload results
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:actions
+
+  analyze-swift:
+    name: Semgrep Swift
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/requirements-security.txt
+      - name: Install scanner
+        run: python -m pip install -r .github/requirements-security.txt
+      # CodeQL cannot trace Xcode 27/Swift 6.4 builds. Semgrep scans the Swift
+      # source without compiling it and requires no external account or token.
+      - name: Scan Swift source
+        run: |
+          semgrep scan --oss-only --config p/swift \
+            --metrics off --disable-version-check --strict \
+            --sarif --output "$RUNNER_TEMP/swift.sarif" JIBIJI
+          jq -e '.runs[0].tool.driver.rules | length > 0' "$RUNNER_TEMP/swift.sarif"
+      - name: Upload Swift results
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ runner.temp }}/swift.sarif
+          category: semgrep-swift
