@@ -31,6 +31,22 @@ struct RecognitionCrossCheckTests {
         }
     }
 
+    @Test func laterBoxesKeepTheirReadingsWhenEarlierBoxesHaveManyCandidates() throws {
+        let hanzi = RecognizedLine(text: "农", bounds: CGRect(x: 80, y: 100, width: 40, height: 40),
+                                   readings: "衣长乐天人口木火水山日月".map { String($0) })
+        let pinyin = RecognizedLine(text: "none", bounds: CGRect(x: 140, y: 100, width: 80, height: 40),
+                                    alternatives: ["nong"])
+        let gloss = RecognizedLine(text: "farmer", bounds: CGRect(x: 240, y: 100, width: 100, height: 40),
+                                   readings: ["farming"])
+        let lines = RecognitionCrossCheck.resolve([hanzi, pinyin, gloss])
+        #expect(lines.count == 1)
+        let line = try #require(lines.first)
+        #expect(line.rawText == "农 none farmer")
+        #expect(line.text == "农 nong farmer")
+        #expect(line.inkEditSuppressed && !line.needsReview)
+        #expect(FlashcardExtractor.extract(from: line.text)?.back == "nong — farmer")
+    }
+
     @Test func distantAndDifferentRowsDoNotSupplyContext() {
         let hanzi = RecognizedLine(text: "农", bounds: CGRect(x: 80, y: 100, width: 40, height: 40))
         for box in [CGRect(x: 500, y: 100, width: 200, height: 40), CGRect(x: 140, y: 200, width: 200, height: 40)] {

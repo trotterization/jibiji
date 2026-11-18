@@ -59,7 +59,10 @@ enum RecognitionCrossCheck {
                     + unique([next.text] + next.readings + next.alternatives).map { "\(line.text) \($0)" })
                 line.sourceText = line.sourceText != nil || next.sourceText != nil ? "\(line.rawText) \(next.rawText)" : nil
                 line.text = primary
-                line.readings = Array(readings.prefix(12))
+                // Each candidate changes one box. Keep later boxes' readings even when
+                // earlier boxes supplied many candidates that cannot align with the Hanzi.
+                line.readings = readings
+                line.alternatives = []
                 line.bounds = line.bounds.union(next.bounds)
                 line.needsReview = line.needsReview || next.needsReview
                 used.insert(other)
