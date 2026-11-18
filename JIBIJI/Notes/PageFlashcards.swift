@@ -57,7 +57,16 @@ final class PageFlashcards {
     private(set) var status: Status = .idle
     /// Set when the saved file couldn't be read. The file is left untouched and nothing is saved over it.
     private(set) var loadError: String?
-    private(set) var currentDigest: String?
+    // Hash only when cards are inspected/refreshed, never on PencilKit's stroke callback.
+    private var sourceDrawing: PKDrawing?
+    @ObservationIgnored private var cachedDigest: String?
+    var currentDigest: String? {
+        guard let sourceDrawing else { return nil }
+        if let cachedDigest { return cachedDigest }
+        let digest = Self.digest(of: sourceDrawing)
+        cachedDigest = digest
+        return digest
+    }
 
     @ObservationIgnored private let fileURL: URL
     @ObservationIgnored private let reader: any InkLineReader
@@ -136,7 +145,8 @@ final class PageFlashcards {
 
     /// Call when the ink changes: cancels any running read, so its result can't be applied.
     func inkChanged(_ drawing: PKDrawing) {
-        currentDigest = Self.digest(of: drawing)
+        sourceDrawing = drawing
+        cachedDigest = nil
         generation += 1
         task?.cancel()
         task = nil

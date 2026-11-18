@@ -25,6 +25,7 @@ final class NotePageModel {
     private(set) var state: SaveState
     /// A one-time message, e.g. that an unreadable page file was set aside.
     var notice: String?
+    @ObservationIgnored var onInkChange: (() -> Void)?
 
     /// Provisional suggestions and accepted notes for this page, kept apart from the ink.
     let suggestions: PageSuggestionModel
@@ -104,6 +105,7 @@ final class NotePageModel {
     func drawingDidChange(_ newDrawing: PKDrawing) {
         guard isEditable else { return }
         drawing = newDrawing
+        onInkChange?()
         suggestions.sourceDidChange()
         flashcards.inkChanged(newDrawing)
         hasUnsavedChanges = true

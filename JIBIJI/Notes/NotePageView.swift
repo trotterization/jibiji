@@ -6,6 +6,7 @@ struct NotePageView: View {
     @Bindable var notebook: NotebookModel
     var showHome: (() -> Void)? = nil
     @State private var canvas = CanvasController()
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var showsRecognitionCheck = false
     @State private var showsCards = false
     /// The bar's bottom edge in the window. The page scrolls under the bar, starting below it.
@@ -80,7 +81,7 @@ struct NotePageView: View {
                 page.drawingDidChange(drawing)
             }
             // Same frame as the canvas, so suggestions can follow its scroll offset.
-            .overlay { SuggestionOverlay(page: page, canvas: canvas, topInset: barBottom) }
+            .overlay { SuggestionOverlay(page: page, canvas: canvas, topInset: barBottom).allowsHitTesting(!canvas.isReading) }
             .overlay { quickPalette }
             .rises(distance: 0)
             // A separate canvas (and tool picker) per page.
@@ -97,7 +98,7 @@ struct NotePageView: View {
     /// The jibiji pen case under the page. Hidden while a sheet covers the page.
     @ViewBuilder
     private var toolBar: some View {
-        if canvas.isFocused, currentPage?.isEditable ?? false {
+        if canvas.isFocused, !canvas.isReading, currentPage?.isEditable ?? false {
             InkToolBar(controller: canvas)
                 .padding(.bottom, 10)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -165,6 +166,11 @@ struct NotePageView: View {
                     }
                     .accessibilityIdentifier("pageItem-\(id)")
                 }
+                if sizeClass == .compact {
+                    Button("Check recognition", systemImage: "text.viewfinder") {
+                        currentPage?.saveIfNeeded(); canvas.resignFocus(); showsRecognitionCheck = true
+                    }
+                }
                 Divider()
                 Button("New Page", systemImage: "plus") {
                     notebook.createPage()
@@ -197,7 +203,15 @@ struct NotePageView: View {
 
             Spacer(minLength: 8)
 
-            if let page = currentPage, let note = page.latestVisibleReplacement {
+            Button(canvas.isReading ? "Write" : "Read", systemImage: canvas.isReading ? "pencil.tip" : "hand.point.up") {
+                currentPage?.saveIfNeeded()
+                canvas.setReading(!canvas.isReading)
+            }
+            .buttonStyle(BarIconButtonStyle())
+            .accessibilityIdentifier("pageReadingMode")
+            .accessibilityValue(canvas.isReading ? "Reading" : "Writing")
+
+            if !canvas.isReading, let page = currentPage, let note = page.latestVisibleReplacement {
                 // The most recent replacement that is still intact on the page.
                 Button("Restore handwriting", systemImage: "arrow.uturn.backward") {
                     if page.restoreOriginal(note.id) { canvas.applyDrawing(page.drawing, actionName: "Restore handwriting") }
@@ -212,7 +226,7 @@ struct NotePageView: View {
                 .buttonStyle(BarIconButtonStyle())
                 .accessibilityIdentifier("deleteReplacement")
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
-            } else if let suggestions = currentPage?.suggestions, suggestions.canUndo,
+            } else if !canvas.isReading, let suggestions = currentPage?.suggestions, suggestions.canUndo,
                       suggestions.annotations.last?.replacement == nil {
                 // Older text notes, saved before replacements existed.
                 Button("Undo suggestion", systemImage: "arrow.uturn.backward") {
@@ -230,13 +244,15 @@ struct NotePageView: View {
             .buttonStyle(BarIconButtonStyle())
             .disabled(!(currentPage?.isEditable ?? false))
             .accessibilityIdentifier("cardsButton")
-            Button("Check recognition", systemImage: "text.viewfinder") {
-                currentPage?.saveIfNeeded()
-                canvas.resignFocus()
-                showsRecognitionCheck = true
+            if sizeClass != .compact {
+                Button("Check recognition", systemImage: "text.viewfinder") {
+                    currentPage?.saveIfNeeded()
+                    canvas.resignFocus()
+                    showsRecognitionCheck = true
+                }
+                .buttonStyle(BarIconButtonStyle())
+                .disabled(!(currentPage?.isEditable ?? false))
             }
-            .buttonStyle(BarIconButtonStyle())
-            .disabled(!(currentPage?.isEditable ?? false))
             Button {
                 guard let page = currentPage else { return }
                 page.suggestions.request(for: page.drawing)
@@ -244,7 +260,7 @@ struct NotePageView: View {
                 SuggestLabel(isReading: currentPage?.suggestions.status == .checking)
             }
             .buttonStyle(PressScaleButtonStyle())
-            .disabled(!(currentPage?.isEditable ?? false))
+            .disabled(canvas.isReading || !(currentPage?.isEditable ?? false))
             .accessibilityLabel("Suggest")
             .accessibilityIdentifier("suggestButton")
             .padding(.leading, 6)

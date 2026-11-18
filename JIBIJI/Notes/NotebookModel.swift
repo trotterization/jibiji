@@ -24,6 +24,14 @@ final class NotebookModel {
     /// Names, colors, pins, and folders, for the home page.
     private(set) var library = NotebookLibrary()
     let homeAppearance: HomeAppearanceModel
+    let searchIndex: HandwritingSearchIndex
+    let documents: PDFLibrary
+    let sync: FolderSyncModel
+    private(set) var localRevision = 0
+    var pageIsOpen = false
+    var homeEditorIsOpen = false
+    var canImportSync: Bool { !pageIsOpen && !homeEditorIsOpen }
+    var hasPendingInk: Bool { models.values.contains { $0.hasPendingChanges } || documents.hasPendingInk }
     /// False when library.json exists but can't be read: it is then never overwritten.
     @ObservationIgnored private var canSaveLibrary = true
 
@@ -37,13 +45,24 @@ final class NotebookModel {
     init(store: NoteStore, autosaveDelay: Duration = .milliseconds(700)) {
         self.store = store
         self.homeAppearance = HomeAppearanceModel(directory: store.directory)
+        self.searchIndex = HandwritingSearchIndex(directory: store.directory)
+        self.documents = PDFLibrary(directory: store.directory.appending(path: "PDFs"), usesTestNotebook: store.isTestNotebook)
+        self.sync = FolderSyncModel(directory: store.directory)
         self.autosaveDelay = autosaveDelay
+        documents.onChange = { [weak self] in self?.localRevision += 1 }
+        do { try SyncTransaction.recover(store.directory) }
+        catch { loadState = .failed("Couldn't recover an interrupted sync. Your files have been kept."); return }
         reload()
+        #if DEBUG
+        if store.isTestNotebook && UserDefaults.standard.bool(forKey: "JIBIJIPDFFixture") { PDFWorkspaceFixture.install(in: documents) }
+        #endif
     }
 
     /// Reads the page list again (also the retry after a failure). Keeps pages already open.
     func reload() {
         do {
+            try SyncTransaction.recover(store.directory)
+            documents.reload()
             let ids = try store.loadPageIDs()
             pageIDs = ids
             loadState = .ready
@@ -90,6 +109,7 @@ final class NotebookModel {
             Logger.notes.error("Couldn't add page: \(error.localizedDescription, privacy: .public)")
             return
         }
+        localRevision += 1
         pageIDs.append(newID)
         currentPageID = newID
     }
@@ -120,7 +140,7 @@ final class NotebookModel {
     }
 
     /// Save the page's home details together; a failed write leaves all fields unchanged.
-    func editPage(_ pageID: String, name: String, summary: String, tag: PageTag?, pinned: Bool, folder: String?) {
+    func editPage(_ pageID: String, name: String, summary: String, tag: PageTag?, pinned: Bool, folder: String?, labels: String = "") {
         if let folder, !library.folders.contains(folder) { return }
         updatePage(pageID) { info in
             let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -130,6 +150,28 @@ final class NotebookModel {
             info.tag = tag
             info.pinned = pinned
             info.folder = folder
+            let tags = Array(Set(labels.split(separator: ",").map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40)) }.filter { !$0.isEmpty })).sorted()
+            info.labels = tags.isEmpty ? nil : Array(tags.prefix(20))
+        }
+    }
+
+    func matchesSearch(_ query: String, pageID: String) -> Bool {
+        let info = info(for: pageID)
+        let ink = models[pageID]?.hasPendingChanges == true ? "" : searchIndex.text(for: pageID, savedAt: store.modificationDate(pageID: pageID))
+        let text = [title(for: pageID), info.summary ?? "", info.folder ?? "", info.tag?.name ?? "", (info.labels ?? []).joined(separator: " "), ink].joined(separator: " ")
+        return query.split(whereSeparator: \.isWhitespace).allSatisfy { text.localizedStandardContains(String($0)) }
+    }
+
+    func indexHandwriting() {
+        saveAll()
+        let pages = pageIDs.compactMap { id -> (id: String, drawing: PKDrawing, savedAt: Date?)? in
+            guard models[id]?.hasPendingChanges != true,
+                  let drawing = try? store.loadDrawing(pageID: id) else { return nil }
+            return (id, drawing, store.modificationDate(pageID: id))
+        }
+        searchIndex.index(pages) { [weak self] id, date in
+            guard let self else { return false }
+            return models[id]?.hasPendingChanges != true && store.modificationDate(pageID: id) == date
         }
     }
 
@@ -184,6 +226,7 @@ final class NotebookModel {
         do {
             try store.savePageIDs(reordered)
             pageIDs = reordered
+            localRevision += 1
         } catch {
             alert = "Couldn't move the page: \(error.localizedDescription)"
         }
@@ -231,6 +274,7 @@ final class NotebookModel {
         do {
             try store.saveLibrary(updated)
             library = updated
+            localRevision += 1
         } catch {
             alert = "Couldn't save that change: \(error.localizedDescription)"
         }
@@ -239,6 +283,17 @@ final class NotebookModel {
     /// Saves every page with pending ink (autosave timers, backgrounding).
     func saveAll() {
         for model in models.values { model.saveIfNeeded() }
+        documents.saveAll()
+    }
+
+    func didImportSync() {
+        searchIndex.cancel()
+        for page in models.values { page.suggestions.cancelPending() }
+        models.removeAll()
+        documents.forgetSavedModels()
+        localRevision += 1
+        reload()
+        documents.reload()
     }
 
     private func flushCurrentPage() {
@@ -252,6 +307,7 @@ final class NotebookModel {
     private func model(for pageID: String) -> NotePageModel {
         if let existing = models[pageID] { return existing }
         let created = NotePageModel(pageID: pageID, store: store, autosaveDelay: autosaveDelay)
+        created.onInkChange = { [weak self] in self?.localRevision += 1 }
         models[pageID] = created
         return created
     }

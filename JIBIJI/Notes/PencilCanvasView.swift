@@ -21,11 +21,11 @@ final class CanvasController {
     }
 
     /// Makes `canvas` the one the bar drives: its tool, its policy, and its own undo history.
-    func attach(_ canvas: NoteCanvasView) {
+    func attach(_ canvas: NoteCanvasView, applyingTools: Bool = true) {
         canvasView = canvas
         // A new page's canvas starts at zoom 1 and offset 0, whatever the last page was left at.
         viewportDidChange(of: canvas)
-        applyTools()
+        if applyingTools { applyTools() }
         undoObservers.forEach(NotificationCenter.default.removeObserver)
         undoObservers = [
             .NSUndoManagerCheckpoint, .NSUndoManagerDidCloseUndoGroup,
@@ -42,20 +42,37 @@ final class CanvasController {
     /// "Draw with finger" (in the tool bar's settings) opts out. Disposable UI-test notebooks keep
     /// finger drawing, because XCUITest has no Pencil.
     var inkIsPencilOnly = true
+    private(set) var isReading = false
+
+    func setReading(_ reading: Bool) {
+        guard isReading != reading else { return }
+        isReading = reading
+        tools.quickPalette = nil
+        applyTools()
+        if !reading { canvasView?.becomeFirstResponder() }
+        refreshUndoState()
+    }
 
     func applyTools() {
         guard let canvas = canvasView else { return }
         canvas.tool = tools.pkTool
         let pencilOnly = (inkIsPencilOnly || UIPencilInteraction.prefersPencilOnlyDrawing) && !tools.allowsFingerDrawing
         canvas.drawingPolicy = pencilOnly ? .pencilOnly : .anyInput
+        (canvas as? NoteCanvasView)?.isReadOnly = isReading
+        canvas.drawingGestureRecognizer.isEnabled = !isReading
+        canvas.panGestureRecognizer.allowedTouchTypes = isReading
+            ? [NSNumber(value: UITouch.TouchType.direct.rawValue), NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+            : [NSNumber(value: UITouch.TouchType.direct.rawValue)]
     }
 
     func undo() {
+        guard !isReading else { return }
         canvasView?.undoManager?.undo()
         refreshUndoState()
     }
 
     func redo() {
+        guard !isReading else { return }
         canvasView?.undoManager?.redo()
         refreshUndoState()
     }
@@ -90,7 +107,7 @@ final class CanvasController {
     /// Install a model edit as one native undo operation. Native undo/redo notifies
     /// the model, while the initial model-authored change is already accounted for.
     func applyDrawing(_ drawing: PKDrawing, actionName: String = "Replace handwriting", notify: Bool = false) {
-        guard let canvas = canvasView as? NoteCanvasView else { return }
+        guard !isReading, let canvas = canvasView as? NoteCanvasView else { return }
         let old = canvas.drawing
         canvas.undoManager?.registerUndo(withTarget: self) { controller in
             controller.applyDrawing(old, actionName: actionName, notify: true)
@@ -204,11 +221,12 @@ struct PencilCanvasView: UIViewRepresentable {
         }
 
         func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+            guard controller?.isReading == false else { return }
             controller?.tools.pencilTap(at: tap.hoverPose?.location)
         }
 
         func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
-            guard squeeze.phase == .ended else { return }
+            guard squeeze.phase == .ended, controller?.isReading == false else { return }
             controller?.tools.pencilSqueeze(at: squeeze.hoverPose?.location)
         }
     }
@@ -232,7 +250,17 @@ final class NoteCanvasView: PKCanvasView {
     /// UndoManager, so Undo on one page could be offered for, or act on, another page's strokes.
     /// History lasts while the canvas does: switching pages starts the page's canvas fresh.
     private let pageUndoManager = UndoManager()
-    override var undoManager: UndoManager? { pageUndoManager }
+    var isReadOnly = false {
+        didSet {
+            guard isReadOnly != oldValue else { return }
+            if isReadOnly { resignFirstResponder() }
+        }
+    }
+    override var canBecomeFirstResponder: Bool { !isReadOnly }
+    override var undoManager: UndoManager? { isReadOnly ? nil : pageUndoManager }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        !isReadOnly && super.canPerformAction(action, withSender: sender)
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()

@@ -13,17 +13,20 @@ final class HomePersonalizationUITests: XCTestCase {
         let description = app.descendants(matching: .any)["pageDetailsDescription"].firstMatch
         description.tap(); description.typeText("Travel vocabulary")
         let pinned = app.switches["pageDetailsPinned"]
+        for _ in 0..<3 where !pinned.isHittable { app.swipeUp() }
         pinned.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
         XCTAssertEqual(pinned.value as? String, "1")
         attach(app, "Page details editor")
         app.buttons["savePageDetails"].tap()
         XCTAssertTrue(app.buttons["homePage-page-1"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.buttons["homePage-page-1"].label, "Lesson 8")
+        for _ in 0..<4 where !app.staticTexts["Travel vocabulary"].exists { app.swipeUp() }
         XCTAssertTrue(app.staticTexts["Travel vocabulary"].exists)
         XCTAssertTrue(app.staticTexts["PINNED"].exists)
         app.terminate()
         app = home("page-details", reset: false)
         XCTAssertEqual(app.buttons["homePage-page-1"].label, "Lesson 8")
+        for _ in 0..<4 where !app.staticTexts["Travel vocabulary"].exists { app.swipeUp() }
         XCTAssertTrue(app.staticTexts["Travel vocabulary"].exists)
         attach(app, "Personalized home")
     }

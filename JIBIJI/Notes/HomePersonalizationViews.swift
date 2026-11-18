@@ -193,6 +193,7 @@ struct HomePageDetailsEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
     @State private var summary: String
+    @State private var labels: String
     @State private var tag: PageTag?
     @State private var pinned: Bool
     @State private var folder: String?
@@ -203,6 +204,7 @@ struct HomePageDetailsEditor: View {
         let info = notebook.info(for: pageID)
         _title = State(initialValue: info.name ?? "")
         _summary = State(initialValue: info.summary ?? "")
+        _labels = State(initialValue: (info.labels ?? []).joined(separator: ", "))
         _tag = State(initialValue: info.tag)
         _pinned = State(initialValue: info.pinned)
         _folder = State(initialValue: info.folder)
@@ -219,6 +221,10 @@ struct HomePageDetailsEditor: View {
                         .lineLimit(2...4)
                         .accessibilityLabel("Page description").accessibilityIdentifier("pageDetailsDescription")
                         .onChange(of: summary) { _, value in summary = String(value.prefix(240)) }
+                }
+                Section("Tags") {
+                    TextField("Tags, separated by commas", text: $labels)
+                        .accessibilityIdentifier("pageDetailsTags")
                 }
                 Section("Organize") {
                     Toggle("Pinned", isOn: $pinned).accessibilityIdentifier("pageDetailsPinned")
@@ -239,7 +245,7 @@ struct HomePageDetailsEditor: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        notebook.editPage(pageID, name: title, summary: summary, tag: tag, pinned: pinned, folder: folder)
+                        notebook.editPage(pageID, name: title, summary: summary, tag: tag, pinned: pinned, folder: folder, labels: labels)
                         if notebook.alert == nil { dismiss() }
                     }
                     .accessibilityIdentifier("savePageDetails")

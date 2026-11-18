@@ -26,6 +26,7 @@ private struct RootView: View {
 
     let notebook: NotebookModel
     @State private var screen = Screen.cover
+    @Environment(\.scenePhase) private var phase
 
     var body: some View {
         ZStack {
@@ -56,5 +57,13 @@ private struct RootView: View {
         }
         // Same surface as every screen, so nothing flashes while they cross over.
         .background(Theme.surface.ignoresSafeArea())
+        .onChange(of: screen) { _, screen in notebook.pageIsOpen = screen == .page }
+        .task(id: phase) {
+            guard phase == .active else { return }
+            while !Task.isCancelled {
+                await notebook.sync.synchronize(notebook)
+                do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            }
+        }
     }
 }

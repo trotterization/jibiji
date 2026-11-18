@@ -19,6 +19,7 @@ struct InkToolBar: View {
             ViewThatFits(in: .horizontal) {
                 bar(compact: false)
                 bar(compact: true)
+                ScrollView(.horizontal) { bar(compact: true) }.scrollIndicators(.hidden).frame(height: 66)
             }
             .padding(.horizontal, 12)
         case .quick:
