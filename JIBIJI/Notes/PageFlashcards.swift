@@ -25,6 +25,12 @@ struct PageFlashcard: Codable, Identifiable, Equatable {
     var dedupeKey: String? = nil
     /// Set when the card came from an accepted inline correction. Optional for older files.
     var correction: CardCorrection? = nil
+    /// Identities of the strokes this card's note is made of (sorted). With them a card goes stale only when
+    /// *its own* writing changes, not when something is written elsewhere on the page. Optional: cards saved
+    /// before this existed fall back to the whole-page digest.
+    var sourceStrokeIDs: [String]? = nil
+    /// The source is an accepted replacement's generated strokes (present while any of them is on the page).
+    var sourceIsReplacement: Bool? = nil
 }
 
 /// Links a card to the accepted note it was built from.
@@ -58,6 +64,8 @@ final class PageFlashcards {
     /// Set when the saved file couldn't be read. The file is left untouched and nothing is saved over it.
     private(set) var loadError: String?
     private(set) var currentDigest: String?
+    @ObservationIgnored private var currentDrawing: PKDrawing?
+    @ObservationIgnored private var snapshotCache: (ids: [String], set: Set<String>)?
     /// Accepted notes found on the page that could not become a card (no usable English), from the last merge.
     private(set) var skippedNotes = 0
 
@@ -82,7 +90,31 @@ final class PageFlashcards {
 
     // MARK: - Derived lists
 
-    func isCurrent(_ card: PageFlashcard) -> Bool { currentDigest != nil && card.inkDigest == currentDigest }
+    func isCurrent(_ card: PageFlashcard) -> Bool {
+        guard let digest = currentDigest else { return false }
+        if card.inkDigest == digest { return true }
+        // The page changed since this card was read. It is still current if its own note is untouched.
+        guard let ids = card.sourceStrokeIDs, !ids.isEmpty, let drawing = currentDrawing else { return false }
+        let snapshot = strokeSnapshot(of: drawing)
+        let want = Set(ids)
+        if card.sourceIsReplacement == true { return !want.isDisjoint(with: snapshot.set) }
+        guard want.isSubset(of: snapshot.set) else { return false }
+        // Nothing the student wrote since lies inside the note's own region.
+        let region = card.sourceBounds.insetBy(dx: -2, dy: -2)
+        return !drawing.strokes.indices.contains { i in
+            let box = drawing.strokes[i].renderBounds
+            return !want.contains(snapshot.ids[i]) && region.contains(CGPoint(x: box.midX, y: box.midY))
+        }
+    }
+
+    /// Stroke identities of the current page, hashed once per change and only when a card needs them.
+    private func strokeSnapshot(of drawing: PKDrawing) -> (ids: [String], set: Set<String>) {
+        if let snapshotCache { return snapshotCache }
+        let ids = drawing.strokes.map(InkSelection.identity)
+        let made = (ids, Set(ids))
+        snapshotCache = made
+        return made
+    }
     /// Drafts awaiting review, from the current ink.
     var currentDrafts: [PageFlashcard] { cards.filter { $0.status == .draft && isCurrent($0) } }
     /// Approved cards from the current ink.
@@ -139,6 +171,8 @@ final class PageFlashcards {
     /// Call when the ink changes: cancels any running read, so its result can't be applied.
     func inkChanged(_ drawing: PKDrawing) {
         currentDigest = Self.digest(of: drawing)
+        currentDrawing = drawing
+        snapshotCache = nil
         generation += 1
         task?.cancel()
         task = nil
@@ -201,13 +235,19 @@ final class PageFlashcards {
         // text differently from the one Suggest saw.
         let needsStrokeMatch = drawing != nil && corrections.contains { $0.replacement == nil && !($0.sourceStrokeIDs ?? []).isEmpty }
         // Stroke identities are content hashes: compute them once for the page, not per line.
-        let pageIDs = needsStrokeMatch ? drawing!.strokes.map(InkSelection.identity) : []
-        let lineStrokes = needsStrokeMatch
+        let pageIDs = drawing != nil ? drawing!.strokes.map(InkSelection.identity) : []
+        let lineStrokes = drawing != nil
             ? lines.map { line in
                 line.strokeIndices.map { Set($0.filter(pageIDs.indices.contains).map { pageIDs[$0] }) }
                     ?? Set(InkSelection.indices(in: drawing!, bounds: line.bounds).map { pageIDs[$0] })
             } : []
         skippedNotes = 0
+        /// Whether this card's own source differs from `now`. Without stroke identities on either side the whole-page
+        /// digest decides, as before.
+        func sourceChanged(_ card: PageFlashcard, now: Set<String>?) -> Bool {
+            if let old = card.sourceStrokeIDs, !old.isEmpty, let now, !now.isEmpty { return Set(old) != now }
+            return card.inkDigest != digest
+        }
         var added = 0
         var claimedLines = Set<Int>()
         var activeNotes = Set<UUID>()
@@ -226,6 +266,8 @@ final class PageFlashcards {
             }
             let match = candidates.max { Self.overlap(note.anchor, lines[$0].bounds) < Self.overlap(note.anchor, lines[$1].bounds) }
             guard let li = match else { continue }
+            // This note's own strokes: a replacement's generated ink, else the strokes of the line it matched.
+            let sourceIDs: Set<String> = note.replacement?.replacementStrokeIDs ?? (lineStrokes.indices.contains(li) ? lineStrokes[li] : [])
             guard let r = Self.resolve(note, line: lines[li], vocabulary: vocabulary) else {
                 skippedNotes += 1   // matched its ink but has no usable English: say so rather than drop it silently
                 continue
@@ -244,19 +286,24 @@ final class PageFlashcards {
             guard let i else {
                 let card = PageFlashcard(id: UUID(), front: r.hanzi, back: back, kind: .vocabulary, sourceText: line.rawText,
                                          needsReview: false, sourceBounds: line.bounds, inkDigest: digest,
-                                         status: .draft, edited: false, dedupeKey: key, correction: correction)
+                                         status: .draft, edited: false, dedupeKey: key, correction: correction,
+                                         sourceStrokeIDs: sourceIDs.isEmpty ? nil : sourceIDs.sorted(),
+                                         sourceIsReplacement: note.replacement != nil ? true : nil)
                 cards.append(card)
                 usedCards.insert(card.id)
                 added += 1
                 continue
             }
             usedCards.insert(cards[i].id)
+            let noteChanged = sourceChanged(cards[i], now: sourceIDs)
             if cards[i].correction?.signature == correction.signature {
                 if cards[i].inkDigest != digest {
-                    if cards[i].status == .approved { cards[i].status = .draft }
+                    // Only a change to this note's own writing needs the student to approve it again.
+                    if noteChanged, cards[i].status == .approved { cards[i].status = .draft }
                     cards[i].inkDigest = digest
                     cards[i].sourceBounds = line.bounds
                 }
+                if !sourceIDs.isEmpty { cards[i].sourceStrokeIDs = sourceIDs.sorted(); cards[i].sourceIsReplacement = note.replacement != nil ? true : nil }
             } else if cards[i].status != .discarded {
                 // The accepted source changed: re-draft. Explicit card edits are kept, but flagged.
                 if cards[i].edited {
@@ -272,6 +319,7 @@ final class PageFlashcards {
                 cards[i].inkDigest = digest
                 cards[i].sourceBounds = line.bounds
                 cards[i].sourceText = line.rawText
+                if !sourceIDs.isEmpty { cards[i].sourceStrokeIDs = sourceIDs.sorted(); cards[i].sourceIsReplacement = note.replacement != nil ? true : nil }
             }
             cards[i].correction = correction
         }
@@ -287,6 +335,7 @@ final class PageFlashcards {
             draft.sourceText = line.rawText
             draft.needsReview = draft.needsReview || line.needsReview
             let key = Self.dedupeKey(front: draft.front, back: draft.back, kind: draft.kind)
+            let sourceIDs: Set<String> = lineStrokes.indices.contains(index) ? lineStrokes[index] : []
             if let i = cards.firstIndex(where: { ($0.dedupeKey ?? Self.dedupeKey(front: $0.front, back: $0.back, kind: $0.kind)) == key }) {
                 // Same card seen again: keep edits, re-anchor to this ink.
                 if line.needsReview, cards[i].status != .discarded {
@@ -295,11 +344,13 @@ final class PageFlashcards {
                     if cards[i].status == .approved { cards[i].status = .draft }
                 }
                 if cards[i].inkDigest != digest {
-                    // Ink changed since it was approved: it must be approved again.
-                    if cards[i].status == .approved { cards[i].status = .draft }
+                    // This note's own writing changed since it was approved: it must be approved again. Writing
+                    // elsewhere on the page does not count.
+                    if sourceChanged(cards[i], now: sourceIDs), cards[i].status == .approved { cards[i].status = .draft }
                     cards[i].inkDigest = digest
                     cards[i].sourceBounds = line.bounds
                 }
+                if !sourceIDs.isEmpty { cards[i].sourceStrokeIDs = sourceIDs.sorted() }
                 cards[i].dedupeKey = key
                 continue
             }
@@ -307,7 +358,7 @@ final class PageFlashcards {
                 id: UUID(), front: draft.front, back: draft.back, kind: draft.kind,
                 sourceText: draft.sourceText, needsReview: draft.needsReview || line.needsReview,
                 sourceBounds: line.bounds, inkDigest: digest, status: .draft, edited: false,
-                dedupeKey: key
+                dedupeKey: key, sourceStrokeIDs: sourceIDs.isEmpty ? nil : sourceIDs.sorted()
             ))
             added += 1
         }
