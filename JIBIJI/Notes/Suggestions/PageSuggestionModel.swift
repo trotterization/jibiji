@@ -136,6 +136,11 @@ extension PencilInkLineReader {
     /// Every engine's reading of exactly these strokes, tagged by engine. Raw evidence, not yet validated.
     static func evidence(for strokes: [PKStroke], recognizer: Any?) async -> [NoteEvidence.Reading] {
         var out: [NoteEvidence.Reading] = []
+        #if DEBUG
+        let started = Date()
+        print("EVIDENCE start strokes=\(strokes.count) recognizer=\(recognizer != nil)")
+        defer { print("EVIDENCE done \(String(format: "%.2f", Date().timeIntervalSince(started)))s readings=\(out.map { "\($0.engine.rawValue):\($0.text)" })") }
+        #endif
         /// The first reading of an engine is its answer; the rest are its lower-ranked guesses (diagnostic only).
         func add(_ texts: [String], _ engine: NoteEvidence.Engine) {
             var first = true
@@ -151,7 +156,11 @@ extension PencilInkLineReader {
            let raw = await recognizer.recognizedText(strokeIDs: Set(strokes.map(\.id))) { add([raw], .pencilKit) }
         add((try? await VisionInkReader.shared.lineReadings(in: ink, includeMobileModel: false)) ?? [], .vision)
         #if DEBUG
-        add(await PinyinOCR.shared.readings(ink), .paddle)
+        print("EVIDENCE vision done, paddle next")
+        // The model's plain best reading first (the one "Run Pinyin OCR by line" shows), then the beam-search guesses.
+        // The beam's top string can differ from the plain reading; the guesses stay diagnostics.
+        let plain = await PinyinOCR.shared.recognizeMobile(ink).text.map { [$0] } ?? []
+        add(plain + (await PinyinOCR.shared.readings(ink)), .paddle)
         #endif
         return out
     }
@@ -322,7 +331,13 @@ final class PageSuggestionModel {
 
     private(set) var pending: [PendingSuggestion] = []
     private(set) var annotations: [AcceptedAnnotation]
-    private(set) var status: Status = .idle
+    private(set) var status: Status = .idle {
+        didSet {
+            #if DEBUG
+            DebugTrace.log("status -> \(status)")
+            #endif
+        }
+    }
     /// Accepted annotations, newest last, that Undo can remove.
     private(set) var undoStack: [UUID] = []
     /// Why accepted notes aren't saved (nil when fine).
@@ -366,6 +381,9 @@ final class PageSuggestionModel {
     ///
     /// Accepted notes are never removed or saved because of ink changes; see `isVisible(_:in:)`.
     func sourceDidChange() {
+        #if DEBUG
+        DebugTrace.log("sourceDidChange rev=\(revision + 1)")
+        #endif
         revision += 1
         task?.cancel()
         task = nil
@@ -384,6 +402,9 @@ final class PageSuggestionModel {
 
     /// The page is no longer shown: drop pending suggestions and any running request. Accepted notes stay.
     func cancelPending() {
+        #if DEBUG
+        DebugTrace.log("cancelPending rev=\(revision + 1)")
+        #endif
         revision += 1
         task?.cancel()
         task = nil
@@ -423,7 +444,13 @@ final class PageSuggestionModel {
         let reader = reader
         task = Task { [weak self] in
             let outcome: Result<[RecognizedLine], any Error>
+            #if DEBUG
+            DebugTrace.log("request task start")
+            #endif
             do { outcome = .success(try await reader.lines(in: readable)) } catch { outcome = .failure(error) }
+            #if DEBUG
+            DebugTrace.log("reader returned")
+            #endif
             guard let self, !Task.isCancelled, self.revision == requested else { return }
             self.finish(outcome, revision: requested, drawing: drawing, strokeIDs: strokeIDs, readable: readable)
         }
@@ -448,7 +475,14 @@ final class PageSuggestionModel {
             // Recognition trouble never blocks writing or touches strokes.
             status = .message(error is InkLineReaderError ? error.localizedDescription : "Suggestions aren't available right now. Keep writing.")
         case .success(let recognized):
+            #if DEBUG
+            print("SUGGEST finish lines=\(recognized.count)")
+            DebugTrace.log("finish lines=\(recognized.count)")
+            #endif
             let lines = RecognitionCrossCheck.resolve(recognized, vocabulary: vocabulary)
+            #if DEBUG
+            DebugTrace.log("crosscheck done lines=\(lines.count)")
+            #endif
             var unmatched: [String] = []
             var unreadable: [String] = []
             // Which accepted notes still have their source on the page, decided once (not per line).
@@ -501,6 +535,9 @@ final class PageSuggestionModel {
                                          readingNote: readingNote, inkEditSuppressed: suppressInk)
             }
             // Only when nothing else was offered, so it never sits beside working suggestions looking like a failure.
+            #if DEBUG
+            DebugTrace.log("pending=\(pending.count) unreadable=\(unreadable.count) unmatched=\(unmatched.count)")
+            #endif
             if pending.isEmpty, !unreadable.isEmpty {
                 status = .message(unreadable.joined(separator: " "))
             } else if pending.isEmpty, !unmatched.isEmpty {

@@ -44,6 +44,9 @@ enum NoteReading {
             readings.append(.init(cell: cell, text: read?.text))
         }
         try Task.checkCancellation()
+        #if DEBUG
+        print("NOTEREADING cells=\(cells.count) readings=\(readings.map { $0.text ?? "-" })")
+        #endif
         var lines: [RecognizedLine] = []
         for entry in NoteGrouping.entries(from: readings, vocabulary: vocabulary) {
             try Task.checkCancellation()
@@ -64,7 +67,15 @@ enum NoteReading {
                     for var reading in try await readRegion(strokes) { reading.scope = .entry; reading.field = nil; evidence.append(reading) }
                 }
             }
-            if let line = line(for: entry, evidence: evidence, vocabulary: vocabulary) { lines.append(line) }
+            #if DEBUG
+            print("NOTEREADING resolving entry strokes=\(entry.strokeIndices.count) evidence=\(evidence.count)")
+            DebugTrace.log("resolving entry strokes=\(entry.strokeIndices.count) evidence=\(evidence.count)")
+            #endif
+            let built = line(for: entry, evidence: evidence, vocabulary: vocabulary)
+            #if DEBUG
+            DebugTrace.log("resolved entry -> \(built?.text ?? "nil")")
+            #endif
+            if let line = built { lines.append(line) }
         }
         return lines
     }
@@ -127,6 +138,9 @@ enum NoteReading {
     private static func line(for entry: NoteGrouping.Entry, evidence: [NoteEvidence.Reading], vocabulary: StarterVocabulary) -> RecognizedLine? {
         guard !entry.fields.isEmpty, !entry.bounds.isEmpty else { return nil }
         let resolved = FieldResolver.resolve(entry: entry, readings: evidence, vocabulary: vocabulary)
+        #if DEBUG
+        print("RESOLVED text=\(resolved.cleanText) pinyin=\(resolved.pinyin.status.rawValue) hanzi=\(resolved.hanzi.status.rawValue) english=\(resolved.english.status.rawValue)")
+        #endif
         var line = RecognizedLine(text: resolved.cleanText, bounds: entry.bounds)
         line.strokeIndices = entry.strokeIndices
         line.resolved = resolved

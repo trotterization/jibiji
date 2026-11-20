@@ -99,6 +99,10 @@ enum FieldResolver {
 
     static func resolve(entry: NoteGrouping.Entry, readings: [NoteEvidence.Reading],
                         vocabulary: StarterVocabulary = .standard) -> ResolvedNote {
+        #if DEBUG
+        DebugTrace.log("resolve begin readings=\(readings.count): " + readings.map { "\($0.engine.rawValue)/\($0.scope)/\($0.alternate ? "alt" : "main")/\($0.partial ? "part" : "full")=\($0.text.replacingOccurrences(of: "\n", with: "|"))" }.joined(separator: " ; "))
+        defer { DebugTrace.log("resolve end") }
+        #endif
         var diagnostics: [String] = []
         func note(_ message: String) { if !diagnostics.contains(message) { diagnostics.append(message) } }
 

@@ -8,10 +8,10 @@ Supersedes the "Next repair assignment" in `HANDOFF.md`. Design: `repair-flow.md
 |---|---|
 | Branch | `task/recognition-repair` (from `d28b745` = PR #25 stage 3 + PR #27 docs) |
 | Draft PR | https://github.com/trotterization/jibiji/pull/28 (base: PR #25's branch; nothing merged) |
-| Commit | `38671b3` (installed on the iPad; Debug build stamp `38671b3`) |
+| Commit | see the PR head. The installed Debug build stamp shows the short SHA. |
 | Independent review | Fresh read-only reviewer found: short real English wrongly rejected as misfiled Pinyin; unresolved English could still yield a dictionary-gloss card; text-accepted older notes could stop matching; loose gloss-substring matching. All fixed with tests. Remaining, not fixed: proper nouns/abbreviations/accented loanwords fail the English spell check and become `unresolved` (safe, user edits); the spell check runs through the main thread (cached; no deadlock seen); simulator-only `isEnglish` tests depend on the device spell-check dictionary. |
-| Tests | 259 passing in the Simulator (1 known Simulator-only issue). Injected readers; not handwriting accuracy. |
-| Installed | Signed Debug build installed over the existing app via devicectl; data untouched. |
+| Tests | 260 passing in the Simulator (1 known Simulator-only issue). Injected readers; not handwriting accuracy. |
+| Installed | Signed Debug build installed over the existing app via devicectl; data untouched. Free-account profiles expire after 7 days: reinstall needs Xcode signed in and the profile trusted on the iPad. |
 | Not included | PR #26 stage-4 records (unvalidated; not merged, not deployed) |
 | Build stamp | Debug: bottom-right of the Home screen and the top of "Check recognition" show `build <git short SHA>` plus flags |
 
@@ -36,3 +36,18 @@ Supersedes the "Next repair assignment" in `HANDOFF.md`. Design: `repair-flow.md
 - No general dictionary or semantic AI exists. Options are in `repair-flow.md`; none is added.
 - Field-scoped ink correction, per-note records (PR #26) and persistence of skipped suggestions are untouched.
 - Engine engines disagree on real ink; the status model reports that rather than hiding it.
+
+## Physical iPad findings (page 6, `好 hǎo xiang`)
+
+- **No hang.** "Suggest just loads" was not a hang. A Debug step log (`DebugTrace`, written to `Documents/trace.log`, DEBUG only) showed Suggest finishing in about 2 s. It then showed a small grey message at the top-right, easy to miss: "Pinyin could not be read reliably".
+- **Cause of the unreadable Pinyin.** On the iPad the Paddle mobile model's plain best reading is `hǎo xiang` (what "Run Pinyin OCR by line" shows). Suggest used only the beam-search readings, whose top string was `hǔo xiang`. The correct reading was a lower-ranked alternate, which is diagnostic only. Fix: `PencilInkLineReader.evidence` now adds the plain reading first, then the beam guesses as alternates.
+- **Result on the iPad:** the note resolves to `好 hǎo xiang`, one suggestion chip appears (像 / "to seem like; to look like"), "Save as note" works, and the cards show the approved English.
+- Also removed: the main-thread hop in the spell check (replaced by a lock-protected `UITextChecker`). It was not the cause of the symptom.
+- Not yet verified on the iPad: force-quit reopen, undo, export, and ink preserved after Replace.
+
+## Limits that remain
+
+- No dictionary or AI: only the 8-entry starter vocabulary proposes completions.
+- Proper nouns and loanwords fail the English spell check and become `unresolved` (safe; the student edits).
+- One page and one ink sample were verified on the iPad. Handwriting accuracy in general is unproven.
+- The "no suggestion" message is small and at the top-right; making it more visible is a UI change not made here.

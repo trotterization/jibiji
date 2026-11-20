@@ -1,5 +1,5 @@
 import Foundation
-import UIKit
+@preconcurrency import UIKit
 
 /// Spelling-level checks for Mandarin Pinyin and the other two writing fields of a note.
 ///
@@ -165,18 +165,23 @@ enum FieldValidation {
     private static let cacheLock = NSLock()
     nonisolated(unsafe) private static var spellCache: [String: Bool] = [:]
 
-    /// UITextChecker is main-actor bound; the reader runs elsewhere, so ask it on the main thread (results are cached).
+    /// UITextChecker is only a dictionary lookup. It is used under a lock from whatever thread the reader runs on, and
+    /// never hops to the main thread (a hop deadlocked on the iPad).
+    nonisolated(unsafe) private static var checker: UITextChecker?
+
     private static func spelledCorrectly(_ word: String) -> Bool {
-        cacheLock.lock(); let cached = spellCache[word]; cacheLock.unlock()
-        if let cached { return cached }
-        func check() -> Bool {
-            MainActor.assumeIsolated {
-                UITextChecker().rangeOfMisspelledWord(in: word, range: NSRange(location: 0, length: word.utf16.count),
-                                                      startingAt: 0, wrap: false, language: "en_US").location == NSNotFound
-            }
-        }
-        let result = Thread.isMainThread ? check() : DispatchQueue.main.sync(execute: check)
-        cacheLock.lock(); spellCache[word] = result; cacheLock.unlock()
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        if let cached = spellCache[word] { return cached }
+        #if DEBUG
+        DebugTrace.log("spell start \(word)")
+        #endif
+        if checker == nil { checker = UITextChecker() }
+        let result = checker!.rangeOfMisspelledWord(in: word, range: NSRange(location: 0, length: word.utf16.count),
+                                                    startingAt: 0, wrap: false, language: "en_US").location == NSNotFound
+        spellCache[word] = result
+        #if DEBUG
+        DebugTrace.log("spell done \(word)=\(result)")
+        #endif
         return result
     }
 
