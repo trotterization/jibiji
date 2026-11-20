@@ -541,11 +541,10 @@ final class PageSuggestionModel {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var pinyin: String?
         let candidatePinyin = item.candidate.pinyin
-        let restWords = rest.split(whereSeparator: \.isWhitespace).map(String.init)
-        if !candidatePinyin.isEmpty, let slot = PinyinSlot.leading(restWords, expected: candidatePinyin) {
+        if !candidatePinyin.isEmpty, let slot = PinyinSlot.split(rest, expected: candidatePinyin) {
             // Untoned or slightly misread Pinyin is still the Pinyin field; the English is only what follows it.
             pinyin = candidatePinyin
-            rest = restWords.dropFirst(slot.count).joined(separator: " ")
+            rest = slot.remainder
         } else if unedited, !candidatePinyin.isEmpty {
             pinyin = candidatePinyin
         }

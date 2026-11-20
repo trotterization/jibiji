@@ -24,6 +24,14 @@ struct FieldSafetyTests {
         #expect(PinyinSlot.leading(["x7"], expected: "fùzé") == nil)
     }
 
+    @Test func toneNumbersAndPunctuationStillCountAsPinyin() throws {
+        #expect(PinyinSlot.leading(["nong2fu1", "shi4ji2", "farmers'"], expected: "nóngfū shìjí") == .init(count: 2, exact: true))
+        #expect(PinyinSlot.leading(["(nóngfū", "shìjí),", "market"], expected: "nóngfū shìjí") == .init(count: 2, exact: true))
+        let split = try #require(PinyinSlot.split("nong2fu1 shi4ji2 farmers'\nmarket", expected: "nóngfū shìjí"))
+        #expect(split.remainder == "farmers'\nmarket", "the English keeps its own line breaks")
+        #expect(FlashcardExtractor.extract(from: "农夫市集 nong2fu1 shi4ji2 farmers' market")?.back == "nóngfū shìjí — farmers' market")
+    }
+
     @Test func romanizationOfAHanziIsRecognisedNotEnglish() {
         #expect(PinyinSlot.isRomanization("nongfu shiiji", of: "农夫市集"))
         #expect(PinyinSlot.isRomanization("nóngfū shìjí", of: "农夫市集"))
@@ -86,6 +94,63 @@ struct FieldSafetyTests {
         let good = AcceptedAnnotation(id: UUID(), text: "x", edited: false, anchor: .zero, recognizedText: "x",
                                       hanzi: "农夫市集", pinyin: "nóngfū shìjí", gloss: "farmers' market")
         #expect(PageFlashcards.resolve(good, line: RecognizedLine(text: "x", bounds: .zero), vocabulary: .standard)?.gloss == "farmers' market")
+    }
+
+    @Test func approvedEnglishThatEqualsARomanizationIsKeptOnlyBesideRealPinyin() {
+        func note(pinyin: String?) -> AcceptedAnnotation {
+            AcceptedAnnotation(id: UUID(), text: "x", edited: true, anchor: .zero, recognizedText: "x",
+                               hanzi: "农夫市集", pinyin: pinyin, gloss: "nongfu shiji")
+        }
+        let line = RecognizedLine(text: "x", bounds: .zero)
+        // The student approved this English next to a Pinyin field: it is theirs.
+        #expect(PageFlashcards.resolve(note(pinyin: "nóngfū shìjí"), line: line, vocabulary: .standard)?.gloss == "nongfu shiji")
+        // No Pinyin field at all: the old misfiling, so it is not turned into a definition.
+        #expect(PageFlashcards.resolve(note(pinyin: nil), line: line, vocabulary: .standard) == nil)
+    }
+
+    @Test func aNoteWithNoUsableEnglishIsReportedNotDroppedSilently() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "Stage2-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let ink = SyntheticInk.drawing(writing: "大")
+        // A word the starter list does not know: nothing else can supply a meaning, so say so.
+        let note = AcceptedAnnotation(id: UUID(), text: "x", edited: false, anchor: ink.bounds, recognizedText: "电脑",
+                                      hanzi: "电脑", pinyin: nil, gloss: "dianao")
+        let model = PageFlashcards(pageID: "page-1", store: NoteStore(directory: folder),
+                                   reader: FixedReader(result: [RecognizedLine(text: "电脑", bounds: ink.bounds)]))
+        await model.refresh(from: ink, annotations: [note]).value
+        #expect(model.skippedNotes == 1)
+        if case .message(let text) = model.status { #expect(text.contains("no English meaning")) } else { Issue.record("expected a message") }
+        #expect(model.cards.isEmpty)
+    }
+
+    @Test func aKnownWordWithMisfiledEnglishFallsBackToItsDictionaryMeaningNotTheMisreading() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "Stage2-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let ink = SyntheticInk.drawing(writing: "大")
+        let note = AcceptedAnnotation(id: UUID(), text: "x", edited: false, anchor: ink.bounds, recognizedText: "农夫市集",
+                                      hanzi: "农夫市集", pinyin: nil, gloss: "nongfu shiiji")
+        let model = PageFlashcards(pageID: "page-1", store: NoteStore(directory: folder),
+                                   reader: FixedReader(result: [RecognizedLine(text: "农夫市集", bounds: ink.bounds)]))
+        await model.refresh(from: ink, annotations: [note]).value
+        #expect(model.cards.map(\.back) == ["nóngfū shìjí — farmers' market"])
+        #expect(model.cards.allSatisfy { !$0.back.contains("shiiji") })
+    }
+
+    @Test func twoNotesEachKeepTheirOwnCardWhenReadAgainDifferently() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "Stage2-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let a = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 80, y: 160))
+        let b = SyntheticInk.drawing(writing: "人", origin: CGPoint(x: 500, y: 160))
+        func note(_ ink: PKDrawing, _ hanzi: String, _ pinyin: String, _ gloss: String) -> AcceptedAnnotation {
+            AcceptedAnnotation(id: UUID(), text: "\(hanzi) · \(pinyin) · \(gloss)", edited: true, anchor: ink.bounds, recognizedText: "was read otherwise",
+                               hanzi: hanzi, pinyin: pinyin, gloss: gloss, sourceStrokeIDs: ink.strokes.map(InkSelection.identity).sorted())
+        }
+        let notes = [note(a, "负责", "fùzé", "to be in charge of"), note(b, "复习", "fùxí", "to go over")]
+        let reads = [RecognizedLine(text: "junk one", bounds: a.bounds), RecognizedLine(text: "junk two", bounds: b.bounds)]
+        let model = PageFlashcards(pageID: "page-1", store: NoteStore(directory: folder), reader: FixedReader(result: reads))
+        await model.refresh(from: PKDrawing(strokes: a.strokes + b.strokes), annotations: notes).value
+        #expect(Set(model.cards.map(\.back)) == ["fùzé — to be in charge of", "fùxí — to go over"])
+        #expect(model.cards.count == 2)
     }
 
     // MARK: - Cards follow the accepted note by its source strokes

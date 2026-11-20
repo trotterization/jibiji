@@ -58,6 +58,8 @@ final class PageFlashcards {
     /// Set when the saved file couldn't be read. The file is left untouched and nothing is saved over it.
     private(set) var loadError: String?
     private(set) var currentDigest: String?
+    /// Accepted notes found on the page that could not become a card (no usable English), from the last merge.
+    private(set) var skippedNotes = 0
 
     @ObservationIgnored private let fileURL: URL
     @ObservationIgnored private let reader: any InkLineReader
@@ -169,6 +171,7 @@ final class PageFlashcards {
                     self.status = .message(loadError)
                 } else if !self.saveFailed {
                     self.status = lines.isEmpty ? .message("No writing found on this page.")
+                        : added == 0 && self.skippedNotes > 0 ? .message("An accepted note has no English meaning yet, so no card was made from it. Add one and try again.")
                         : added == 0 ? .message("No new cards found.") : .idle
                 }
             case .failure(let error):
@@ -196,25 +199,34 @@ final class PageFlashcards {
         } + replacements.map { RecognizedLine(text: $0.text, bounds: $0.anchor) }
         // Which strokes each line is made of, so a note is matched to its source ink even if this read spells the
         // text differently from the one Suggest saw.
-        func strokeIDs(_ line: RecognizedLine) -> Set<String> {
-            guard let drawing else { return [] }
-            return Set(InkSelection.indices(in: drawing, bounds: line.bounds).map { InkSelection.identity(drawing.strokes[$0]) })
-        }
         let needsStrokeMatch = drawing != nil && corrections.contains { $0.replacement == nil && !($0.sourceStrokeIDs ?? []).isEmpty }
-        let lineStrokes = needsStrokeMatch ? lines.map(strokeIDs) : []
+        // Stroke identities are content hashes: compute them once for the page, not per line.
+        let pageIDs = needsStrokeMatch ? drawing!.strokes.map(InkSelection.identity) : []
+        let lineStrokes = needsStrokeMatch
+            ? lines.map { line in Set(InkSelection.indices(in: drawing!, bounds: line.bounds).map { pageIDs[$0] }) } : []
+        skippedNotes = 0
         var added = 0
         var claimedLines = Set<Int>()
         var activeNotes = Set<UUID>()
         var usedCards = Set<UUID>()
         for note in corrections {
             // Exact source text only; if several lines match, the one overlapping the note's anchor most.
-            let match = lines.indices.filter { index in
-                if note.replacement != nil { return lines[index].text == note.text && note.anchor.intersects(lines[index].bounds) }
-                if needsStrokeMatch, let ids = note.sourceStrokeIDs, !ids.isEmpty { return Set(ids) == lineStrokes[index] }
-                return lines[index].rawText == note.recognizedText && note.anchor.intersects(lines[index].bounds)
+            func textMatches(_ index: Int) -> Bool {
+                note.replacement != nil ? lines[index].text == note.text && note.anchor.intersects(lines[index].bounds)
+                    : lines[index].rawText == note.recognizedText && note.anchor.intersects(lines[index].bounds)
             }
-                .max { Self.overlap(note.anchor, lines[$0].bounds) < Self.overlap(note.anchor, lines[$1].bounds) }
-            guard let li = match, let r = Self.resolve(note, line: lines[li], vocabulary: vocabulary) else { continue }
+            var candidates = lines.indices.filter(textMatches)
+            if needsStrokeMatch, note.replacement == nil, let ids = note.sourceStrokeIDs, !ids.isEmpty {
+                // The exact source strokes decide; the text is only a fallback when no line is made of them.
+                let bySource = lines.indices.filter { Set(ids) == lineStrokes[$0] }
+                if !bySource.isEmpty { candidates = bySource }
+            }
+            let match = candidates.max { Self.overlap(note.anchor, lines[$0].bounds) < Self.overlap(note.anchor, lines[$1].bounds) }
+            guard let li = match else { continue }
+            guard let r = Self.resolve(note, line: lines[li], vocabulary: vocabulary) else {
+                skippedNotes += 1   // matched its ink but has no usable English: say so rather than drop it silently
+                continue
+            }
             claimedLines.insert(li)
             activeNotes.insert(note.id)
             let line = lines[li]
@@ -331,7 +343,11 @@ final class PageFlashcards {
             guard let gloss = clean(note.gloss) else { return nil }
             // Older notes may hold Pinyin the parser filed as English. A romanization is never a definition:
             // no card is built from it (the note stays as it is and its line is read fresh).
-            guard !PinyinSlot.isRomanization(gloss, of: hanzi, vocabulary: vocabulary) else { return nil }
+            // An exact romanization the student approved next to real Pinyin is kept (a loanword such as "feng shui");
+            // a near miss, or an exact one with no Pinyin field beside it, is the old misfiling.
+            if let kind = PinyinSlot.classify(gloss, of: hanzi, vocabulary: vocabulary), !(kind.exact && clean(note.pinyin) != nil) {
+                return nil
+            }
             return (hanzi, clean(note.pinyin), gloss)
         }
         // Legacy note: only `text`.

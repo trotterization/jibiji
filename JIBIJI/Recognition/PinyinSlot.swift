@@ -26,10 +26,13 @@ enum PinyinSlot {
         var best: (match: Match, distance: Int)?
         for count in 1...min(words.count, 8) {
             let slice = Array(words[0..<count])
-            guard slice.allSatisfy({ $0.contains(where: \.isLetter) && $0.allSatisfy { $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" } }) else { break }
+            // Exact spelling ignores tone marks, tone numbers (`nong2fu1`) and punctuation around the words.
             let observed = StarterVocabulary.latinTokens(slice.joined(separator: " ")).joined()
             if observed == target { return Match(count: count, exact: true) }
-            guard target.count >= minimumLengthForNearMatch else { continue }
+            // A near miss is only credited to plain words: letters, with at most an apostrophe or hyphen.
+            guard target.count >= minimumLengthForNearMatch,
+                  slice.allSatisfy({ $0.contains(where: \.isLetter) && $0.allSatisfy { $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" } })
+            else { continue }
             let distance = StarterVocabulary.editDistance(observed, target)
             let allowed = max(1, target.count / 4)
             if distance <= allowed, best == nil || distance < best!.distance {
@@ -37,6 +40,16 @@ enum PinyinSlot {
             }
         }
         return best?.match
+    }
+
+    /// Splits `text` into its leading Pinyin and the remainder, keeping the remainder exactly as written
+    /// (line breaks and spacing intact). Nil when the text does not start with the expected Pinyin.
+    static func split(_ text: String, expected: String) -> (pinyin: String, remainder: String, match: Match)? {
+        let pieces = text.split(whereSeparator: \.isWhitespace)
+        guard let match = leading(pieces.map(String.init), expected: expected) else { return nil }
+        let end = pieces[match.count - 1].endIndex
+        return (pieces[0..<match.count].joined(separator: " "),
+                String(text[end...]).trimmingCharacters(in: .whitespacesAndNewlines), match)
     }
 
     /// The romanization a Hanzi term is expected to have: its starter-vocabulary reading, else the local transform.
@@ -47,8 +60,14 @@ enum PinyinSlot {
 
     /// Whether every word of `text` is just a (possibly misread) romanization of `hanzi`, so it is Pinyin, not English.
     static func isRomanization(_ text: String, of hanzi: String, vocabulary: StarterVocabulary = .standard) -> Bool {
+        classify(text, of: hanzi, vocabulary: vocabulary) != nil
+    }
+
+    /// `.exact` when `text` is exactly the Hanzi's romanization, `.nearMiss` when it is a slightly misread one, nil otherwise.
+    static func classify(_ text: String, of hanzi: String, vocabulary: StarterVocabulary = .standard) -> Match? {
         let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard !words.isEmpty, let match = leading(words, expected: expectedRomanization(for: hanzi, vocabulary: vocabulary)) else { return false }
-        return match.count == words.count
+        guard !words.isEmpty, let match = leading(words, expected: expectedRomanization(for: hanzi, vocabulary: vocabulary)),
+              match.count == words.count else { return nil }
+        return match
     }
 }
