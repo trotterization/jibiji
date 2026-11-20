@@ -216,7 +216,7 @@ final class PageFlashcards {
             // Exact source text only; if several lines match, the one overlapping the note's anchor most.
             func textMatches(_ index: Int) -> Bool {
                 note.replacement != nil ? lines[index].text == note.text && note.anchor.intersects(lines[index].bounds)
-                    : lines[index].rawText == note.recognizedText && note.anchor.intersects(lines[index].bounds)
+                    : lines[index].wasRead(as: note.recognizedText) && note.anchor.intersects(lines[index].bounds)
             }
             var candidates = lines.indices.filter(textMatches)
             if needsStrokeMatch, note.replacement == nil, let ids = note.sourceStrokeIDs, !ids.isEmpty {

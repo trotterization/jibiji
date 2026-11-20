@@ -196,4 +196,31 @@ struct RecognitionRepairTests {
         cards.merge(lines: [line], digest: "d", corrections: model.annotations, drawing: ink)
         #expect(cards.cards.count == 1)
     }
+
+    @Test func shortRealEnglishBesidesShortPinyinIsKept() async throws {
+        for (hanzi, pinyin, english) in [("他", "tā", "he"), ("我", "wǒ", "me"), ("好", "hǎo", "how")] {
+            let entry = NoteGrouping.Entry(
+                hanzi: .init(text: hanzi, cellText: hanzi, strokeIndices: [0], bounds: .init(x: 0, y: 0, width: 50, height: 50)),
+                pinyin: .init(text: pinyin, cellText: pinyin, strokeIndices: [1], bounds: .init(x: 60, y: 0, width: 50, height: 50)),
+                english: .init(text: english, cellText: english, strokeIndices: [2], bounds: .init(x: 120, y: 0, width: 50, height: 50)),
+                arrangement: .sideBySide, uncertainty: [])
+            let r = FieldResolver.resolve(entry: entry, readings: [])
+            #expect(r.english.value == english, "\(english) beside \(pinyin)")
+            #expect(r.pinyin.value == pinyin)
+        }
+    }
+
+    @Test func unresolvedEnglishNeverBecomesTheDictionaryGloss() {
+        var line = RecognizedLine(text: "好像", bounds: .zero)
+        line.resolved = ResolvedNote(hanzi: .init(value: "好像", status: .confirmed), pinyin: .absent,
+                                     english: .init(value: nil, status: .unresolved), diagnostics: [])
+        #expect(FlashcardExtractor.extract(from: line) == nil)
+    }
+
+    @Test func aNoteAcceptedByTextStillMatchesItsGroupedLine() {
+        var line = RecognizedLine(text: "好 hǎo", bounds: .init(x: 0, y: 0, width: 10, height: 10))
+        line.alsoRead = ["好 hňo"]   // what an older build had read for this note
+        #expect(line.wasRead(as: "好 hňo"))
+        #expect(!line.wasRead(as: "好 xyz"))
+    }
 }

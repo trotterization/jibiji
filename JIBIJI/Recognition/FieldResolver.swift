@@ -139,8 +139,12 @@ enum FieldResolver {
             if let e = parsed.english {
                 // OCR garbles Pinyin without leaving a tone mark (`hho xiang` for `hǎo xiang`). When a Pinyin reading of the
                 // same note is a few letters away, this "English" is that Pinyin, filed in the wrong field. It is not English.
+                // A reading that is real English stays English (`he` beside `tā`). Only one that is NOT English and sits
+                // within a few letters of a Pinyin reading of the same note is that Pinyin filed in the wrong field.
                 let letters = FieldValidation.letters(FieldValidation.words(e))
-                if !letters.isEmpty, pinyinLetters.contains(where: { StarterVocabulary.editDistance(letters, $0) <= max(2, $0.count / 3) }) {
+                let realEnglish = FieldValidation.isEnglish(e, hanzi: parsed.hanzi, vocabulary: vocabulary)
+                if !realEnglish, !letters.isEmpty,
+                   pinyinLetters.contains(where: { StarterVocabulary.editDistance(letters, $0) <= max(2, $0.count / 3) }) {
                     misfiled = true
                     note("English reading is misfiled Pinyin: “\(e)” (\(reading.source))")
                 } else if FieldValidation.isEnglish(e, hanzi: parsed.hanzi, vocabulary: vocabulary) {

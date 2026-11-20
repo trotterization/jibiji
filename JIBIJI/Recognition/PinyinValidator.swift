@@ -185,7 +185,7 @@ enum FieldValidation {
         let lower = word.lowercased()
         guard lower.allSatisfy(\.isLetter), lower.allSatisfy(\.isASCII) else { return false }
         if lower.count == 1 { return lower == "a" || lower == "i" }
-        if vocabulary.entries.contains(where: { $0.glosses.contains { $0.lowercased().contains(lower) } }) { return true }
+        if vocabulary.entries.contains(where: { $0.glosses.contains { StarterVocabulary.latinTokens($0).contains(lower) } }) { return true }
         return spelledCorrectly(lower)
     }
 }

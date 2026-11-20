@@ -39,7 +39,14 @@ enum FlashcardExtractor {
         let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let special = labeled(text) != nil || text.contains("→") || text.contains("->")
             || equation(text, source: text) != nil || grammar(text, source: text, vocabulary: vocabulary) != nil || idiom(text, source: text) != nil
-        if special { return extract(from: text, vocabulary: vocabulary) }
+        if special {
+            var draft = extract(from: text, vocabulary: vocabulary)
+            // Text built without an unresolved field is a partial card: it must be checked.
+            if resolved.fields.contains(where: { $0.1.status == .unresolved }) { draft?.needsReview = true }
+            return draft
+        }
+        // English the student wrote but that could not be read is never replaced by the dictionary's English.
+        if resolved.english.status == .unresolved { return nil }
         guard resolved.hanzi.isUsable, let hanzi = resolved.hanzi.value, FieldValidation.isHanzi(hanzi) else { return nil }
         let entry = vocabulary.entries.first { $0.hanzi == hanzi }
         var review = !resolved.hanzi.isSolid || line.needsReview

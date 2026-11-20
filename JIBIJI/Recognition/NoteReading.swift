@@ -130,6 +130,7 @@ enum NoteReading {
         var line = RecognizedLine(text: resolved.cleanText, bounds: entry.bounds)
         line.strokeIndices = entry.strokeIndices
         line.resolved = resolved
+        line.alsoRead = [entry.text]
         // Raw OCR readings are diagnostics (`resolved.diagnostics`). They are not "other readings" and not alternatives.
         var notes: [String] = []
         if let doubt = resolved.reviewNote { notes.append(doubt) }

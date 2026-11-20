@@ -25,6 +25,9 @@ struct RecognizedLine: Sendable, Equatable {
     var strokeIndices: [Int]? = nil
     /// The validated Hanzi / Pinyin / English of a grouped note. Suggest and cards both read this, nothing else.
     var resolved: ResolvedNote? = nil
+    /// Other texts this note was known by (the grouping's own composed reading), so notes accepted by text still match.
+    var alsoRead: [String] = []
+    func wasRead(as text: String) -> Bool { rawText == text || alsoRead.contains(text) }
 
     /// Compares this line's readings (``alternatives`` and ``readings``) before anything is drafted or edited.
     /// The ink itself is never touched. `rawText` stays what the primary recognizer read.
@@ -481,7 +484,7 @@ final class PageSuggestionModel {
                     // if the recognizer happens to read the same text (so it is evaluated again). Older notes have
                     // only the text to go on.
                     if note.replacement == nil, let ids = note.sourceStrokeIDs, !ids.isEmpty { return Set(ids) == sourceIDs }
-                    return note.recognizedText == line.rawText && note.anchor.intersects(line.bounds)
+                    return line.wasRead(as: note.recognizedText) && note.anchor.intersects(line.bounds)
                 }
                 if alreadyAccepted { return nil }
                 // Two recognizers read the Latin part differently: it may be a misread, not the student's slip.
