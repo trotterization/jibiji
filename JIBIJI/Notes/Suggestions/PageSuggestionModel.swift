@@ -20,6 +20,9 @@ struct RecognizedLine: Sendable, Equatable {
     var reviewNote: String? = nil
     /// The text was corrected from another reading, or is unresolved: no ink edit is offered for this line.
     var inkEditSuppressed = false
+    /// When the line is a grouped note: the indices (in the drawing the reader was given) of exactly the strokes
+    /// it was read from. Nil for a line read by bounds alone.
+    var strokeIndices: [Int]? = nil
 
     /// Compares this line's readings (``alternatives`` and ``readings``) before anything is drafted or edited.
     /// The ink itself is never touched. `rawText` stays what the primary recognizer read.
@@ -33,7 +36,8 @@ struct RecognizedLine: Sendable, Equatable {
         } else {
             line.needsReview = true
         }
-        line.reviewNote = outcome.note
+        // Keep any doubt already attached (for example from grouping) beside this one.
+        line.reviewNote = [reviewNote, outcome.note].compactMap { $0 }.joined(separator: " ")
         line.inkEditSuppressed = true
         return line
     }
@@ -82,10 +86,23 @@ struct PencilInkLineReader: InkLineReader {
         // Chinese instead of interpreting Hanzi as English letters. Also works on older OSes.
         guard #available(iOS 27.0, *),
               PKStrokeRecognizer.supportedLanguages.contains(where: { $0.maximalIdentifier.hasPrefix("zh-Hans") }) else {
-            return try await VisionInkReader.shared.lines(in: drawing)
+            guard NoteReading.isEnabled else { return try await VisionInkReader.shared.lines(in: drawing) }
+            return try await NoteReading.lines(in: drawing) { strokes, _ in
+                let readings = try await VisionInkReader.shared.lineReadings(in: PKDrawing(strokes: strokes))
+                return readings.first.map { NoteReading.CellRead(text: $0, readings: readings) }
+            }
         }
         let recognizer = PKStrokeRecognizer(preferredLanguages: RecognitionProbe.preferredLanguages)
         await recognizer.updateDrawing(drawing)
+        if NoteReading.isEnabled {
+            return try await NoteReading.lines(in: drawing) { strokes, _ in
+                guard let raw = await recognizer.recognizedText(strokeIDs: Set(strokes.map(\.id))), !raw.isEmpty else { return nil }
+                var text = raw
+                if mode == .suggestions { text = await HanziPrefixFallback.resolve(primary: raw, strokes: strokes) }
+                let readings = (try? await VisionInkReader.shared.lineReadings(in: PKDrawing(strokes: strokes))) ?? []
+                return NoteReading.CellRead(text: text, sourceText: text == raw ? nil : raw, readings: readings)
+            }
+        }
         var result: [RecognizedLine] = []
         for group in InkLineGeometry.lineGroups(in: drawing) where !group.isEmpty {
             try Task.checkCancellation()
@@ -197,6 +214,9 @@ struct AcceptedAnnotation: Codable, Identifiable, Equatable {
     /// The English the user approved (including their edits). Nil when the note carries none.
     var gloss: String? = nil
     var replacement: InkReplacement? = nil
+    /// Identities of the original strokes this note (kept beside the ink) was accepted for. Optional so older
+    /// saved notes still load. A later read of exactly these strokes is the same source, not a new note.
+    var sourceStrokeIDs: [String]? = nil
 
     /// A note's text split into parts. Parts joined by "·"; Hanzi, pinyin and anything else (gloss).
     struct ParsedText: Equatable {
@@ -221,6 +241,11 @@ struct AcceptedAnnotation: Codable, Identifiable, Equatable {
                 result.hanzi = part
             } else if let target, !target.isEmpty, StarterVocabulary.latinTokens(inner).joined() == target {
                 result.pinyin = knownPinyin.map { RecognitionCrossCheck.pinyinAgrees(inner, with: $0) ? $0 : inner }
+            } else if let knownPinyin, !knownPinyin.isEmpty,
+                      let slot = PinyinSlot.leading(inner.split(whereSeparator: \.isWhitespace).map(String.init), expected: knownPinyin),
+                      slot.count == inner.split(whereSeparator: \.isWhitespace).count {
+                // A misread of this word's Pinyin is still Pinyin, never English: keep the dictionary reading.
+                result.pinyin = knownPinyin
             } else if !StarterVocabulary.hanzi(in: part).isEmpty {
                 result.ambiguous = true
             } else {
@@ -331,18 +356,40 @@ final class PageSuggestionModel {
             status = .message("Write something first, then ask for a suggestion.")
             return
         }
+        // Accepted replacements are rendered text, not handwriting: reading them again would "correct" a
+        // confirmed answer. Only the student's own strokes go to the recognizer.
+        // Stroke identities are content hashes, so compute them once per request and only when a replacement exists.
+        let strokeIDs = annotations.contains { $0.replacement != nil } ? drawing.strokes.map(InkSelection.identity) : nil
+        let readable = Self.readableInk(drawing, strokeIDs: strokeIDs, excluding: annotations)
+        guard !readable.strokes.isEmpty else {
+            status = .message("No new handwriting to read. Accepted replacements are already confirmed.")
+            return
+        }
         status = .checking
         let requested = revision
         let reader = reader
         task = Task { [weak self] in
             let outcome: Result<[RecognizedLine], any Error>
-            do { outcome = .success(try await reader.lines(in: drawing)) } catch { outcome = .failure(error) }
+            do { outcome = .success(try await reader.lines(in: readable)) } catch { outcome = .failure(error) }
             guard let self, !Task.isCancelled, self.revision == requested else { return }
-            self.finish(outcome, revision: requested, drawing: drawing)
+            self.finish(outcome, revision: requested, drawing: drawing, strokeIDs: strokeIDs, readable: readable)
         }
     }
 
-    private func finish(_ outcome: Result<[RecognizedLine], any Error>, revision: Int, drawing: PKDrawing) {
+    /// The drawing without strokes generated by accepted replacements. Coordinates are unchanged, so every
+    /// line's bounds still locate the original region on the page.
+    nonisolated static func readableInk(_ drawing: PKDrawing, strokeIDs: [String]? = nil,
+                                        excluding annotations: [AcceptedAnnotation]) -> PKDrawing {
+        let generated = annotations.reduce(into: Set<String>()) { $0.formUnion($1.replacement?.replacementStrokeIDs ?? []) }
+        guard !generated.isEmpty else { return drawing }
+        let ids = strokeIDs ?? drawing.strokes.map(InkSelection.identity)
+        let kept = drawing.strokes.indices.filter { !generated.contains(ids[$0]) }.map { drawing.strokes[$0] }
+        return kept.count == drawing.strokes.count ? drawing : PKDrawing(strokes: kept)
+    }
+
+    /// `drawing` is the full page (for note visibility); `readable` is what was read (for source strokes).
+    private func finish(_ outcome: Result<[RecognizedLine], any Error>, revision: Int, drawing: PKDrawing,
+                        strokeIDs: [String]?, readable: PKDrawing) {
         switch outcome {
         case .failure(let error):
             // Recognition trouble never blocks writing or touches strokes.
@@ -350,15 +397,26 @@ final class PageSuggestionModel {
         case .success(let recognized):
             let lines = RecognitionCrossCheck.resolve(recognized, vocabulary: vocabulary)
             var unmatched: [String] = []
+            // Which accepted notes still have their source on the page, decided once (not per line).
+            let readableIDs = lines.contains { $0.strokeIndices != nil } ? readable.strokes.map(InkSelection.identity) : []
+            // (`strokeIDs` exists whenever any note is a replacement.)
+            let ids = strokeIDs ?? []
+            let visibleNotes = annotations.filter { note in
+                guard let replacement = note.replacement else { return Self.isVisible(note, in: drawing) }
+                return ids.indices.contains { replacement.replacementStrokeIDs.contains(ids[$0]) && !drawing.strokes[$0].renderBounds.isEmpty }
+            }
             pending = lines.compactMap { line in
                 let proposal: SuggestionProposal
                 var seen = Set<String>()
-                let readings = ([line.text] + line.readings + line.alternatives).filter { !$0.isEmpty && seen.insert($0).inserted }
+                // Malformed mixed OCR (`x7大`, `a3b9`) is never offered as a word, whatever else the line holds.
+                let readings = ([line.text] + line.readings + line.alternatives)
+                    .filter { !$0.isEmpty && ReadingValidation.isWellFormed($0) && seen.insert($0).inserted }
                 let differentHanzi = Set(readings.map { StarterVocabulary.hanzi(in: $0) }).count > 1
                 let isolatedCharacter = line.text.count == 1 && !StarterVocabulary.hanzi(in: line.text).isEmpty
                 if let known = vocabulary.proposal(forRecognizedText: line.text) {
                     proposal = known
                 } else if !line.inkEditSuppressed, !line.readings.isEmpty,
+                          ReadingValidation.isWellFormed(line.text),
                           readings.contains(where: { !StarterVocabulary.hanzi(in: $0).isEmpty }),
                           differentHanzi || isolatedCharacter {
                     proposal = SuggestionProposal(
@@ -369,11 +427,20 @@ final class PageSuggestionModel {
                     // A word it knows (already complete, or contradicted by other writing) is not "unknown".
                     let runs = StarterVocabulary.hanziRuns(in: line.text)
                     let known = vocabulary.entries.contains { runs.contains($0.hanzi) }
-                    if !runs.isEmpty, !known { unmatched.append(line.text) }
+                    if !runs.isEmpty, !known, ReadingValidation.isWellFormed(line.text) { unmatched.append(line.text) }
                     return nil
                 }
-                let alreadyAccepted = annotations.contains { note in
-                    note.recognizedText == line.rawText && note.anchor.intersects(line.bounds) && Self.isVisible(note, in: drawing)
+                // A grouped note names its own strokes; a line read by bounds alone takes those inside its bounds.
+                let sourceIDs: Set<String> = line.strokeIndices.map { indices in
+                    Set(indices.filter(readable.strokes.indices.contains).map { readableIDs[$0] })
+                } ?? Set(InkSelection.indices(in: readable, bounds: line.bounds).map { InkSelection.identity(readable.strokes[$0]) })
+                // The same source as an accepted note: by the exact original strokes, or (older notes) by the text read.
+                let alreadyAccepted = visibleNotes.contains { note in
+                    // Exact source strokes decide when known: an added, erased or moved stroke is a source change, even
+                    // if the recognizer happens to read the same text (so it is evaluated again). Older notes have
+                    // only the text to go on.
+                    if note.replacement == nil, let ids = note.sourceStrokeIDs, !ids.isEmpty { return Set(ids) == sourceIDs }
+                    return note.recognizedText == line.rawText && note.anchor.intersects(line.bounds)
                 }
                 if alreadyAccepted { return nil }
                 // Two recognizers read the Latin part differently: it may be a misread, not the student's slip.
@@ -386,7 +453,7 @@ final class PageSuggestionModel {
                 }
                 return PendingSuggestion(revision: revision, anchor: line.bounds, recognizedText: line.text,
                                          sourceText: line.sourceText, proposal: proposal,
-                                         sourceStrokeIDs: Set(InkSelection.indices(in: drawing, bounds: line.bounds).map { InkSelection.identity(drawing.strokes[$0]) }),
+                                         sourceStrokeIDs: sourceIDs,
                                          readingNote: readingNote, inkEditSuppressed: suppressInk)
             }
             // Only when nothing else was offered, so it never sits beside working suggestions looking like a failure.
@@ -431,7 +498,8 @@ final class PageSuggestionModel {
             recognizedText: suggestion.sourceText ?? suggestion.recognizedText,
             hanzi: suggestion.candidate.hanzi,
             pinyin: suggestion.candidate.pinyin,
-            gloss: gloss
+            gloss: gloss,
+            sourceStrokeIDs: suggestion.sourceStrokeIDs.isEmpty ? nil : suggestion.sourceStrokeIDs.sorted()
         )
         annotations.append(annotation)
         undoStack.append(annotation.id)
@@ -494,9 +562,10 @@ final class PageSuggestionModel {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var pinyin: String?
         let candidatePinyin = item.candidate.pinyin
-        if !candidatePinyin.isEmpty, rest.lowercased().hasPrefix(candidatePinyin.lowercased()) {
+        if !candidatePinyin.isEmpty, let slot = PinyinSlot.split(rest, expected: candidatePinyin) {
+            // Untoned or slightly misread Pinyin is still the Pinyin field; the English is only what follows it.
             pinyin = candidatePinyin
-            rest = String(rest.dropFirst(candidatePinyin.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            rest = slot.remainder
         } else if unedited, !candidatePinyin.isEmpty {
             pinyin = candidatePinyin
         }
