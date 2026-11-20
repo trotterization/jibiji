@@ -1,0 +1,73 @@
+import Foundation
+import PencilKit
+import Testing
+@testable import JIBIJI
+
+/// Uses the saved failing page from the physical iPad (`好 hǎo xiang`), if it is present locally.
+/// The ink is private device evidence kept OUTSIDE the repository; these tests skip when it is absent.
+/// They check the real stroke geometry through grouping and resolution with injected OCR text. They are not
+/// a handwriting-accuracy test; Vision's real reading of the same ink is printed for the record.
+@Suite("Saved device ink (local only)", .serialized)
+struct LocalDeviceInkTests {
+    private static var url: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "jibiji-device-evidence-private/page-5.drawing")
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: LocalDeviceInkTests.url.path)))
+    func realSpacingJoinsHaoAndXiangIntoOnePinyinField() async throws {
+        let drawing = try PKDrawing(data: Data(contentsOf: Self.url))
+        func piece(_ strokes: [PKStroke]) -> Set<String> { Set(strokes.map(InkSelection.identity)) }
+        let hanziIDs = Set(drawing.strokes[0...3].map(InkSelection.identity))
+        func evidence(_ strokes: [PKStroke]) -> [NoteEvidence.Reading] {
+            let ids = Set(strokes.map(InkSelection.identity))
+            if ids.isSubset(of: hanziIDs) { return [.init(text: "好", engine: .vision, scope: .cell)] }
+            // Cells of the Pinyin: first the `hǎo` letters (misread as in the observed failure), then `xiang`.
+            let hao = Set(drawing.strokes[4...7].map(InkSelection.identity))
+            if ids.isSubset(of: hao) { return [.init(text: "hňo", engine: .vision, scope: .cell)] }
+            return [.init(text: "xiang", engine: .vision, scope: .cell)]
+        }
+        let lines = try await NoteReading.lines(
+            in: drawing,
+            readRegion: { strokes in
+                let ids = Set(strokes.map(InkSelection.identity))
+                return ids.isDisjoint(with: hanziIDs) ? [.init(text: "hǎo xiang", engine: .paddle, scope: .cell)]
+                                                       : [.init(text: "好 hǎo xiang", engine: .paddle, scope: .cell)]
+            },
+            readCell: { strokes, _ in
+                let e = evidence(strokes)
+                return NoteReading.CellRead(text: PencilInkLineReader.primary(of: e) ?? "", evidence: e)
+            })
+        print("LOCAL-INK lines:", lines.map { ($0.text, $0.strokeIndices ?? [], $0.resolved?.diagnostics ?? []) })
+        #expect(lines.count == 1, "好 and its Pinyin are one note")
+        let line = try #require(lines.first)
+        #expect(line.strokeIndices?.count == drawing.strokes.count, "no stroke (xiang) is dropped")
+        #expect(line.text == "好 hǎo xiang")
+        #expect(!line.text.contains("hňo"))
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: LocalDeviceInkTests.url.path)))
+    func visionsOwnReadingOfTheRealInkIsRecordedNotAsserted() async throws {
+        let drawing = try PKDrawing(data: Data(contentsOf: Self.url))
+        let vision = try await VisionInkReader.shared.lineReadings(in: drawing, includeMobileModel: false)
+        print("LOCAL-INK Vision whole-page readings:", vision)
+        #if DEBUG
+        print("LOCAL-INK Paddle whole-page readings:", await PinyinOCR.shared.readings(drawing))
+        #endif
+    }
+
+    /// The whole shipped reader (Vision + Paddle in Debug) on the real ink. Recorded, not asserted: the Simulator's
+    /// PencilKit has no Chinese, and the point is to see what the engines really give the resolver.
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: LocalDeviceInkTests.url.path)))
+    func theWholeReaderOnTheRealInkNeverExposesRawGarble() async throws {
+        let drawing = try PKDrawing(data: Data(contentsOf: Self.url))
+        let lines = try await PencilInkLineReader().lines(in: drawing)
+        for line in lines {
+            print("LOCAL-INK REAL READER text=\(line.text) strokes=\(line.strokeIndices?.count ?? 0) hanzi=\(String(describing: line.resolved?.hanzi)) pinyin=\(String(describing: line.resolved?.pinyin)) english=\(String(describing: line.resolved?.english)) note=\(line.reviewNote ?? "-")")
+            print("LOCAL-INK REAL READER diagnostics:", line.resolved?.diagnostics ?? [])
+            #expect(line.readings.isEmpty)
+            #expect(line.resolved?.english.value == nil, "no English was written on this page")
+        }
+        #expect(!lines.contains { $0.text.contains("hňo") })
+    }
+}

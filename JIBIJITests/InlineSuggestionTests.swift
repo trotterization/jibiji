@@ -152,17 +152,13 @@ final class PageSuggestionModelTests {
         #expect(model.annotations.isEmpty)
     }
 
-    @Test func unknownChineseReadingsOfferEditableAlternativesWithoutInventingMeaning() async {
+    @Test func unknownChineseReadingsAreNeverOfferedAsAlternativesOrInventedMeanings() async {
+        // Raw OCR readings are diagnostics. Without a vocabulary entry there is nothing to propose.
         let model = model(FixedReader(lines: [RecognizedLine(text: "大人", bounds: line.bounds, readings: ["大人", "太人"])]))
         await request(model)
-        #expect(model.pending.count == 1)
-        #expect(model.pending.first?.annotationText == "大人")
-        if let item = model.pending.first {
-            model.select(1, for: item.id)
-            #expect(model.pending.first?.annotationText == "太人")
-            model.accept(item.id)
-            #expect(model.annotations.first?.text == "太人")
-        }
+        #expect(model.pending.isEmpty)
+        #expect(model.annotations.isEmpty)
+        if case .message(let text) = model.status { #expect(text.contains("No confident match")) } else { Issue.record("expected a message") }
     }
 
     @Test func emptyInkNoMatchAndFailureLeaveNothingPendingAndNeverThrowAway() async {

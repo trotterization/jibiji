@@ -6,5 +6,7 @@
 
 JIBIJI_BUNDLE_ID_PREFIX = com.trotterization
 DEVELOPMENT_TEAM =
+// Overridden on the xcodebuild command line with the git commit (JIBIJI_BUILD_COMMIT=$(git rev-parse --short HEAD)).
+JIBIJI_BUILD_COMMIT = unknown
 
 #include? "Local.xcconfig"

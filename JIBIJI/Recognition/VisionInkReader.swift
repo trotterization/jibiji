@@ -13,10 +13,10 @@ actor VisionInkReader {
     private var lineCache: [String: [String]] = [:]
 
     /// A second opinion on the exact stroke group used by the native recognizer.
-    func lineReadings(in drawing: PKDrawing) async throws -> [String] {
-        let key = PageFlashcards.digest(of: drawing)
+    func lineReadings(in drawing: PKDrawing, includeMobileModel: Bool = true) async throws -> [String] {
+        let key = PageFlashcards.digest(of: drawing) + (includeMobileModel ? "" : "|vision")
         if let cached = lineCache[key] { return cached }
-        let lines = try await readCrop(drawing).sorted { $0.bounds.minX < $1.bounds.minX }
+        let lines = try await readCrop(drawing, includeMobileModel: includeMobileModel).sorted { $0.bounds.minX < $1.bounds.minX }
         let primary = lines.map(\.text).joined(separator: " ")
         var readings = primary.isEmpty ? [] : [primary]
         for index in lines.indices {
@@ -72,7 +72,7 @@ actor VisionInkReader {
         }
     }
 
-    private func readCrop(_ drawing: PKDrawing) async throws -> [RecognizedLine] {
+    private func readCrop(_ drawing: PKDrawing, includeMobileModel: Bool = true) async throws -> [RecognizedLine] {
         let padding = max(12, min(drawing.bounds.width, drawing.bounds.height) * 0.12)
         let rect = drawing.bounds.insetBy(dx: -padding, dy: -padding)
         guard rect.width > 0, rect.height > 0,
@@ -111,6 +111,7 @@ actor VisionInkReader {
             return RecognizedLine(text: text, bounds: bounds, readings: readings)
         }.sorted { $0.bounds.minY < $1.bounds.minY }
         #if DEBUG
+        guard includeMobileModel else { return lines }
         // The optional mobile model is local only. Add its reading as a second opinion;
         // never silently replace the student's ink or pretend a reading is certain.
         let readings = await PinyinOCR.shared.readings(drawing)
