@@ -174,14 +174,16 @@ enum FlashcardExtractor {
         var review = false
 
         if let entry {
-            let target = entry.syllables.joined()
-            for k in 1...max(1, words.count) where k <= words.count {
-                if StarterVocabulary.latinTokens(words[0..<k].joined()).joined() == target { consumed = k; break }
-            }
             pinyin = entry.pinyin
-            if consumed > 0 {
+            // The Pinyin slot is judged by spelling shape: an exact spelling, or an OCR near miss of it. A near
+            // miss is still Pinyin; it must never fall through into the English definition.
+            if let slot = PinyinSlot.leading(words, expected: entry.pinyin) {
+                consumed = slot.count
                 let observed = words[0..<consumed].joined(separator: " ")
-                if !RecognitionCrossCheck.pinyinAgrees(observed, with: entry.pinyin) {
+                if !slot.exact {
+                    // The dictionary reading is the evidence; the misread spelling is not kept as Pinyin.
+                    review = true
+                } else if !RecognitionCrossCheck.pinyinAgrees(observed, with: entry.pinyin) {
                     pinyin = observed
                     review = true
                 }
@@ -190,11 +192,8 @@ enum FlashcardExtractor {
             // Unknown term: a leading run of words counts as pinyin only if, ignoring spaces and tones, it equals
             // the local Han-Latin romanization of the term. Otherwise nothing is pinyin and the written text is
             // kept as a flagged meaning. The pinyin is kept exactly as written; nothing is invented.
-            let hint = romanizationHint(for: term)
-            if !hint.isEmpty {
-                for k in 1...max(1, words.count) where k <= words.count {
-                    if StarterVocabulary.latinTokens(words[0..<k].joined()).joined() == hint { consumed = k; break }
-                }
+            if let slot = PinyinSlot.leading(words, expected: romanizationHint(for: term)) {
+                consumed = slot.count
             }
             pinyin = words[0..<consumed].joined(separator: " ")
             review = true

@@ -224,6 +224,11 @@ struct AcceptedAnnotation: Codable, Identifiable, Equatable {
                 result.hanzi = part
             } else if let target, !target.isEmpty, StarterVocabulary.latinTokens(inner).joined() == target {
                 result.pinyin = knownPinyin.map { RecognitionCrossCheck.pinyinAgrees(inner, with: $0) ? $0 : inner }
+            } else if let knownPinyin, !knownPinyin.isEmpty,
+                      let slot = PinyinSlot.leading(inner.split(whereSeparator: \.isWhitespace).map(String.init), expected: knownPinyin),
+                      slot.count == inner.split(whereSeparator: \.isWhitespace).count {
+                // A misread of this word's Pinyin is still Pinyin, never English: keep the dictionary reading.
+                result.pinyin = knownPinyin
             } else if !StarterVocabulary.hanzi(in: part).isEmpty {
                 result.ambiguous = true
             } else {
@@ -536,9 +541,11 @@ final class PageSuggestionModel {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var pinyin: String?
         let candidatePinyin = item.candidate.pinyin
-        if !candidatePinyin.isEmpty, rest.lowercased().hasPrefix(candidatePinyin.lowercased()) {
+        let restWords = rest.split(whereSeparator: \.isWhitespace).map(String.init)
+        if !candidatePinyin.isEmpty, let slot = PinyinSlot.leading(restWords, expected: candidatePinyin) {
+            // Untoned or slightly misread Pinyin is still the Pinyin field; the English is only what follows it.
             pinyin = candidatePinyin
-            rest = String(rest.dropFirst(candidatePinyin.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            rest = restWords.dropFirst(slot.count).joined(separator: " ")
         } else if unedited, !candidatePinyin.isEmpty {
             pinyin = candidatePinyin
         }

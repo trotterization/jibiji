@@ -151,17 +151,19 @@ final class PageFlashcards {
         inkChanged(drawing)
         // Hidden notes (their ink is erased) are ignored.
         let corrections = annotations.filter { PageSuggestionModel.isVisible($0, in: drawing) }
+        // Cards read the student's own strokes, exactly as Suggest does: generated replacement ink is confirmed text.
+        let readable = PageSuggestionModel.readableInk(drawing, excluding: corrections)
         let digest = currentDigest!
         let token = generation
         status = .reading
         let reader = reader
         let newTask = Task { [weak self] in
             let result: Result<[RecognizedLine], Error>
-            do { result = .success(try await reader.lines(in: drawing)) } catch { result = .failure(error) }
+            do { result = .success(try await reader.lines(in: readable)) } catch { result = .failure(error) }
             guard let self, !Task.isCancelled, self.generation == token else { return }
             switch result {
             case .success(let lines):
-                let added = self.merge(lines: lines, digest: digest, corrections: corrections)
+                let added = self.merge(lines: lines, digest: digest, corrections: corrections, drawing: readable)
                 // Don't overwrite a save error from the merge.
                 if let loadError = self.loadError {
                     self.status = .message(loadError)
@@ -182,7 +184,7 @@ final class PageFlashcards {
     /// Adds drafts for `lines`; returns how many were new. Also usable directly with injected lines.
     @discardableResult
     func merge(lines: [RecognizedLine], digest: String, corrections: [AcceptedAnnotation] = [],
-               vocabulary: StarterVocabulary = .standard) -> Int {
+               vocabulary: StarterVocabulary = .standard, drawing: PKDrawing? = nil) -> Int {
         // A replacement is already confirmed text. Don't ask a stroke recognizer
         // to reinterpret the glyph-fill paths and override what the student approved.
         let replacements = corrections.filter { $0.replacement != nil }
@@ -192,13 +194,25 @@ final class PageFlashcards {
                 return !overlap.isNull && overlap.width * overlap.height >= line.bounds.width * line.bounds.height * 0.5
             }
         } + replacements.map { RecognizedLine(text: $0.text, bounds: $0.anchor) }
+        // Which strokes each line is made of, so a note is matched to its source ink even if this read spells the
+        // text differently from the one Suggest saw.
+        func strokeIDs(_ line: RecognizedLine) -> Set<String> {
+            guard let drawing else { return [] }
+            return Set(InkSelection.indices(in: drawing, bounds: line.bounds).map { InkSelection.identity(drawing.strokes[$0]) })
+        }
+        let needsStrokeMatch = drawing != nil && corrections.contains { $0.replacement == nil && !($0.sourceStrokeIDs ?? []).isEmpty }
+        let lineStrokes = needsStrokeMatch ? lines.map(strokeIDs) : []
         var added = 0
         var claimedLines = Set<Int>()
         var activeNotes = Set<UUID>()
         var usedCards = Set<UUID>()
         for note in corrections {
             // Exact source text only; if several lines match, the one overlapping the note's anchor most.
-            let match = lines.indices.filter { (note.replacement != nil ? lines[$0].text == note.text : lines[$0].rawText == note.recognizedText) && note.anchor.intersects(lines[$0].bounds) }
+            let match = lines.indices.filter { index in
+                if note.replacement != nil { return lines[index].text == note.text && note.anchor.intersects(lines[index].bounds) }
+                if needsStrokeMatch, let ids = note.sourceStrokeIDs, !ids.isEmpty { return Set(ids) == lineStrokes[index] }
+                return lines[index].rawText == note.recognizedText && note.anchor.intersects(lines[index].bounds)
+            }
                 .max { Self.overlap(note.anchor, lines[$0].bounds) < Self.overlap(note.anchor, lines[$1].bounds) }
             guard let li = match, let r = Self.resolve(note, line: lines[li], vocabulary: vocabulary) else { continue }
             claimedLines.insert(li)
@@ -315,6 +329,9 @@ final class PageFlashcards {
         }
         if let hanzi = clean(note.hanzi) {
             guard let gloss = clean(note.gloss) else { return nil }
+            // Older notes may hold Pinyin the parser filed as English. A romanization is never a definition:
+            // no card is built from it (the note stays as it is and its line is read fresh).
+            guard !PinyinSlot.isRomanization(gloss, of: hanzi, vocabulary: vocabulary) else { return nil }
             return (hanzi, clean(note.pinyin), gloss)
         }
         // Legacy note: only `text`.
