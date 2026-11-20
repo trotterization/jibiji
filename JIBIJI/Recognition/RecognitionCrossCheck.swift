@@ -40,10 +40,11 @@ enum RecognitionCrossCheck {
             guard !used.contains(index) else { continue }
             var line = input[index]
             let term = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !term.isEmpty, StarterVocabulary.hanzi(in: term) == term,
+            // A line that is already a grouped note (it names its own strokes) is never merged again by position.
+            guard line.strokeIndices == nil, !term.isEmpty, StarterVocabulary.hanzi(in: term) == term,
                   !line.bounds.isEmpty else { output.append(line); continue }
             let neighbors = input.indices.filter { other in
-                guard other != index, !used.contains(other) else { return false }
+                guard other != index, !used.contains(other), input[other].strokeIndices == nil else { return false }
                 let box = input[other].bounds
                 return !box.isEmpty && box.minX >= line.bounds.maxX - 3
                     && abs(box.midY - line.bounds.midY) <= max(box.height, line.bounds.height) * 0.6

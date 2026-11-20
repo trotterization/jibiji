@@ -203,7 +203,10 @@ final class PageFlashcards {
         // Stroke identities are content hashes: compute them once for the page, not per line.
         let pageIDs = needsStrokeMatch ? drawing!.strokes.map(InkSelection.identity) : []
         let lineStrokes = needsStrokeMatch
-            ? lines.map { line in Set(InkSelection.indices(in: drawing!, bounds: line.bounds).map { pageIDs[$0] }) } : []
+            ? lines.map { line in
+                line.strokeIndices.map { Set($0.filter(pageIDs.indices.contains).map { pageIDs[$0] }) }
+                    ?? Set(InkSelection.indices(in: drawing!, bounds: line.bounds).map { pageIDs[$0] })
+            } : []
         skippedNotes = 0
         var added = 0
         var claimedLines = Set<Int>()

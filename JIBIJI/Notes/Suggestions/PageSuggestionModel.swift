@@ -20,6 +20,9 @@ struct RecognizedLine: Sendable, Equatable {
     var reviewNote: String? = nil
     /// The text was corrected from another reading, or is unresolved: no ink edit is offered for this line.
     var inkEditSuppressed = false
+    /// When the line is a grouped note: the indices (in the drawing the reader was given) of exactly the strokes
+    /// it was read from. Nil for a line read by bounds alone.
+    var strokeIndices: [Int]? = nil
 
     /// Compares this line's readings (``alternatives`` and ``readings``) before anything is drafted or edited.
     /// The ink itself is never touched. `rawText` stays what the primary recognizer read.
@@ -82,10 +85,23 @@ struct PencilInkLineReader: InkLineReader {
         // Chinese instead of interpreting Hanzi as English letters. Also works on older OSes.
         guard #available(iOS 27.0, *),
               PKStrokeRecognizer.supportedLanguages.contains(where: { $0.maximalIdentifier.hasPrefix("zh-Hans") }) else {
-            return try await VisionInkReader.shared.lines(in: drawing)
+            guard NoteReading.isEnabled else { return try await VisionInkReader.shared.lines(in: drawing) }
+            return try await NoteReading.lines(in: drawing) { strokes, _ in
+                let readings = try await VisionInkReader.shared.lineReadings(in: PKDrawing(strokes: strokes))
+                return readings.first.map { NoteReading.CellRead(text: $0, readings: readings) }
+            }
         }
         let recognizer = PKStrokeRecognizer(preferredLanguages: RecognitionProbe.preferredLanguages)
         await recognizer.updateDrawing(drawing)
+        if NoteReading.isEnabled {
+            return try await NoteReading.lines(in: drawing) { strokes, _ in
+                guard let raw = await recognizer.recognizedText(strokeIDs: Set(strokes.map(\.id))), !raw.isEmpty else { return nil }
+                var text = raw
+                if mode == .suggestions { text = await HanziPrefixFallback.resolve(primary: raw, strokes: strokes) }
+                let readings = (try? await VisionInkReader.shared.lineReadings(in: PKDrawing(strokes: strokes))) ?? []
+                return NoteReading.CellRead(text: text, sourceText: text == raw ? nil : raw, readings: readings)
+            }
+        }
         var result: [RecognizedLine] = []
         for group in InkLineGeometry.lineGroups(in: drawing) where !group.isEmpty {
             try Task.checkCancellation()
@@ -381,6 +397,7 @@ final class PageSuggestionModel {
             let lines = RecognitionCrossCheck.resolve(recognized, vocabulary: vocabulary)
             var unmatched: [String] = []
             // Which accepted notes still have their source on the page, decided once (not per line).
+            let readableIDs = lines.contains { $0.strokeIndices != nil } ? readable.strokes.map(InkSelection.identity) : []
             // (`strokeIDs` exists whenever any note is a replacement.)
             let ids = strokeIDs ?? []
             let visibleNotes = annotations.filter { note in
@@ -412,7 +429,10 @@ final class PageSuggestionModel {
                     if !runs.isEmpty, !known, ReadingValidation.isWellFormed(line.text) { unmatched.append(line.text) }
                     return nil
                 }
-                let sourceIDs = Set(InkSelection.indices(in: readable, bounds: line.bounds).map { InkSelection.identity(readable.strokes[$0]) })
+                // A grouped note names its own strokes; a line read by bounds alone takes those inside its bounds.
+                let sourceIDs: Set<String> = line.strokeIndices.map { indices in
+                    Set(indices.filter(readable.strokes.indices.contains).map { readableIDs[$0] })
+                } ?? Set(InkSelection.indices(in: readable, bounds: line.bounds).map { InkSelection.identity(readable.strokes[$0]) })
                 // The same source as an accepted note: by the exact original strokes, or (older notes) by the text read.
                 let alreadyAccepted = visibleNotes.contains { note in
                     // Exact source strokes decide when known: an added, erased or moved stroke is a source change, even
