@@ -41,35 +41,41 @@ struct NoteRegistry: Codable, Equatable {
                 result[index] = records[i]
             }
         }
+        // Edited notes: the best pairings first, so a record goes to the reading it resembles most, not to the first
+        // reading that happens to clear the threshold.
+        var pairs: [(source: Int, record: Int, overlap: Double)] = []
         for (index, source) in sources.enumerated() where !source.ids.isEmpty && result[index] == nil {
-            let sorted = source.ids.sorted()
-            var best: (offset: Int, overlap: Double)?
             for (i, record) in records.enumerated() where !used.contains(record.id) {
                 let shared = Set(record.strokeIDs).intersection(source.ids).count
                 let union = Set(record.strokeIDs).union(source.ids).count
                 let overlap = union == 0 ? 0 : Double(shared) / Double(union)
-                if overlap >= Self.sameNoteOverlap, overlap > (best?.overlap ?? 0) { best = (i, overlap) }
+                if overlap >= Self.sameNoteOverlap { pairs.append((index, i, overlap)) }
             }
-            if let best {
-                // The same note, its source edited: a new revision, and old rejections no longer apply.
-                records[best.offset].revision += 1
-                records[best.offset].strokeIDs = sorted
-                records[best.offset].bounds = source.bounds
-                records[best.offset].rejected = []
-                used.insert(records[best.offset].id)
-                result[index] = records[best.offset]
-            } else {
-                let record = NoteRecord(id: UUID(), revision: 1, strokeIDs: sorted, bounds: source.bounds)
-                records.append(record)
-                used.insert(record.id)
-                result[index] = record
-            }
+        }
+        var takenRecords = Set<Int>()
+        for pair in pairs.sorted(by: { ($0.overlap, -$0.source) > ($1.overlap, -$1.source) }) {
+            guard result[pair.source] == nil, !takenRecords.contains(pair.record) else { continue }
+            takenRecords.insert(pair.record)
+            // The same note, its source edited: a new revision, and old rejections no longer apply.
+            records[pair.record].revision += 1
+            records[pair.record].strokeIDs = sources[pair.source].ids.sorted()
+            records[pair.record].bounds = sources[pair.source].bounds
+            records[pair.record].rejected = []
+            used.insert(records[pair.record].id)
+            result[pair.source] = records[pair.record]
+        }
+        for (index, source) in sources.enumerated() where !source.ids.isEmpty && result[index] == nil {
+            let record = NoteRecord(id: UUID(), revision: 1, strokeIDs: source.ids.sorted(), bounds: source.bounds)
+            records.append(record)
+            used.insert(record.id)
+            result[index] = record
         }
         if records.count > Self.maxRecords {
             let drop = records.count - Self.maxRecords
             var removed = 0
             records.removeAll { record in
-                guard removed < drop, !used.contains(record.id), !kept.contains(record.id) else { return false }
+                // Never drop a record that is in use, referenced by an accepted note, or carries a rejection.
+                guard removed < drop, !used.contains(record.id), !kept.contains(record.id), record.rejected.isEmpty else { return false }
                 removed += 1
                 return true
             }

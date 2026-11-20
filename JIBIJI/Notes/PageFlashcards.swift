@@ -66,6 +66,8 @@ final class PageFlashcards {
     private(set) var currentDigest: String?
     @ObservationIgnored private var currentDrawing: PKDrawing?
     @ObservationIgnored private var snapshotCache: (ids: [String], set: Set<String>)?
+    /// Per-card answers for the current ink, so views asking many times do not re-scan the page.
+    @ObservationIgnored private var verdicts: [UUID: Bool] = [:]
     /// Accepted notes found on the page that could not become a card (no usable English), from the last merge.
     private(set) var skippedNotes = 0
 
@@ -95,16 +97,29 @@ final class PageFlashcards {
         if card.inkDigest == digest { return true }
         // The page changed since this card was read. It is still current if its own note is untouched.
         guard let ids = card.sourceStrokeIDs, !ids.isEmpty, let drawing = currentDrawing else { return false }
+        if let known = verdicts[card.id] { return known }
+        let verdict = ownNoteUnchanged(card, ids: ids, in: drawing)
+        verdicts[card.id] = verdict
+        return verdict
+    }
+
+    private func ownNoteUnchanged(_ card: PageFlashcard, ids: [String], in drawing: PKDrawing) -> Bool {
         let snapshot = strokeSnapshot(of: drawing)
         let want = Set(ids)
         if card.sourceIsReplacement == true { return !want.isDisjoint(with: snapshot.set) }
         guard want.isSubset(of: snapshot.set) else { return false }
-        // Nothing the student wrote since lies inside the note's own region.
-        let region = card.sourceBounds.insetBy(dx: -2, dy: -2)
+        // Nothing the student wrote since belongs to this note: a stroke that is no other card's, and lies within
+        // about a character of the note (a trailing English word, a stroke under or beside it).
+        let others = cards.reduce(into: Set<String>()) { if $1.id != card.id { $0.formUnion($1.sourceStrokeIDs ?? []) } }
+        let region = Self.relatedRegion(of: card.sourceBounds)
         return !drawing.strokes.indices.contains { i in
-            let box = drawing.strokes[i].renderBounds
-            return !want.contains(snapshot.ids[i]) && region.contains(CGPoint(x: box.midX, y: box.midY))
+            !want.contains(snapshot.ids[i]) && !others.contains(snapshot.ids[i]) && drawing.strokes[i].renderBounds.intersects(region)
         }
+    }
+
+    /// The area around a note in which new writing counts as part of that note.
+    nonisolated static func relatedRegion(of bounds: CGRect) -> CGRect {
+        bounds.insetBy(dx: -0.75 * bounds.height - 2, dy: -0.5 * bounds.height - 2)
     }
 
     /// Stroke identities of the current page, hashed once per change and only when a card needs them.
@@ -173,6 +188,7 @@ final class PageFlashcards {
         currentDigest = Self.digest(of: drawing)
         currentDrawing = drawing
         snapshotCache = nil
+        verdicts = [:]
         generation += 1
         task?.cancel()
         task = nil
@@ -242,6 +258,7 @@ final class PageFlashcards {
                     ?? Set(InkSelection.indices(in: drawing!, bounds: line.bounds).map { pageIDs[$0] })
             } : []
         skippedNotes = 0
+        verdicts = [:]
         /// Whether this card's own source differs from `now`. Without stroke identities on either side the whole-page
         /// digest decides, as before.
         func sourceChanged(_ card: PageFlashcard, now: Set<String>?) -> Bool {

@@ -343,13 +343,18 @@ final class PageSuggestionModel {
         if let drawing, !pending.isEmpty {
             let ids = drawing.strokes.map(InkSelection.identity)
             let present = Set(ids)
+            // Strokes that belong to some other note (another chip, an accepted note) are not this note's edits.
+            let claimed = annotations.reduce(into: Set<String>()) {
+                $0.formUnion($1.sourceStrokeIDs ?? [])
+                $0.formUnion($1.replacement?.replacementStrokeIDs ?? [])
+            }
             pending = pending.filter { item in
                 guard !item.sourceStrokeIDs.isEmpty, item.sourceStrokeIDs.isSubset(of: present) else { return false }
-                // Nothing the student did lies inside this note's own region.
-                let region = item.anchor.insetBy(dx: -2, dy: -2)
+                // Nothing the student did lies in or just beside this note's own region.
+                let others = pending.reduce(into: claimed) { if $1.id != item.id { $0.formUnion($1.sourceStrokeIDs) } }
+                let region = PageFlashcards.relatedRegion(of: item.anchor)
                 return !drawing.strokes.indices.contains { i in
-                    let box = drawing.strokes[i].renderBounds
-                    return !item.sourceStrokeIDs.contains(ids[i]) && region.contains(CGPoint(x: box.midX, y: box.midY))
+                    !item.sourceStrokeIDs.contains(ids[i]) && !others.contains(ids[i]) && drawing.strokes[i].renderBounds.intersects(region)
                 }
             }.map { item in
                 var kept = PendingSuggestion(revision: revision, anchor: item.anchor, recognizedText: item.recognizedText,

@@ -56,8 +56,23 @@ struct NoteRegistryTests {
     @Test func emptyStrokeSetsAreIgnoredAndRecordsAreCapped() {
         var registry = NoteRegistry()
         #expect(registry.reconcile([([], box(0))]) == [nil])
-        for i in 0..<(NoteRegistry.maxRecords + 20) { _ = registry.reconcile([(["s\(i)"], box(0))]) }
-        #expect(registry.records.count <= NoteRegistry.maxRecords + 1)
+        let precious = registry.reconcile([(["keep-a"], box(0))])[0]!
+        registry.reject(note: precious.id, revision: 1, key: "好像")
+        let referenced = registry.reconcile([(["keep-b"], box(0))])[0]!
+        for i in 0..<(NoteRegistry.maxRecords + 20) { _ = registry.reconcile([(["s\(i)"], box(0))], keeping: [referenced.id]) }
+        #expect(registry.records.count == NoteRegistry.maxRecords)
+        #expect(registry.record(precious.id)?.rejected == ["好像"], "a remembered rejection is not evicted")
+        #expect(registry.record(referenced.id) != nil, "a record an accepted note refers to is not evicted")
+    }
+
+    @Test func aRecordGoesToTheReadingItResemblesMost() {
+        var registry = NoteRegistry()
+        let original = registry.reconcile([(["a", "b", "c", "d", "e", "f"], box(0))])[0]!
+        // Split into two readings; the later one is by far the closer match to the old note.
+        let after = registry.reconcile([(["a", "b", "x"], box(0)), (["a", "b", "c", "d", "e"], box(200))])
+        #expect(after[1]?.id == original.id)
+        #expect(after[0]?.id != original.id)
+        #expect(after[0]?.revision == 1)
     }
 
     @Test func storeRoundTripsAndNeverOverwritesAnUnreadableFile() throws {
@@ -146,6 +161,18 @@ struct NoteIndependenceTests {
         #expect(Set(again.suggestions.pending.map(\.candidate.hanzi)) == ["负责", "复习"])
     }
 
+    @Test func anUnreadableNotesFileIsNeverOverwrittenAndSuggestStillWorks() async throws {
+        let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let bad = dir.appending(path: "page-1.notes.json")
+        try Data("not json".utf8).write(to: bad)
+        let a = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 80, y: 100))
+        let (model, _) = page(dir, notes: [(a, "fùzé")])
+        await suggest(model)
+        #expect(model.suggestions.pending.map(\.candidate.hanzi) == ["负责"])
+        #expect(try Data(contentsOf: bad) == Data("not json".utf8))
+    }
+
     @Test func acceptedNoteRecordsItsNoteAndRevision() async throws {
         let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
         let a = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 80, y: 100))
@@ -226,6 +253,19 @@ struct CardCurrencyTests {
         #expect(byFront["负责"]?.status == .draft, "its own writing changed: approve again")
         #expect(byFront["复习"]?.status == .approved, "an untouched note keeps its approval")
         #expect(again.cards.count == 2)
+    }
+
+    @Test func writingJustBesideAnApprovedNoteMakesItStaleButNotItsNeighbour() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "Stage4c-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (model, drawing, a, _) = setUp(dir)
+        await model.refresh(from: drawing, annotations: []).value
+        approveAll(model)
+        // An English word added to the right of note A, outside its old bounds but beside it.
+        let beside = SyntheticInk.stroke(through: [CGPoint(x: a.bounds.maxX + 20, y: a.bounds.midY), CGPoint(x: a.bounds.maxX + 60, y: a.bounds.midY)])
+        model.inkChanged(PKDrawing(strokes: drawing.strokes + [beside]))
+        #expect(model.approvedCurrent.map(\.front) == ["复习"])
+        #expect(model.staleCards.map(\.front) == ["负责"])
     }
 
     @Test func cardsSavedBeforeStrokeIdentitiesStillGoStaleWithThePage() throws {
