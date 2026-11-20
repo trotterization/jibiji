@@ -27,7 +27,7 @@ enum NoteReading {
         vocabulary: StarterVocabulary = .standard,
         readCell: (_ strokes: [PKStroke], _ cell: NoteLayout.CellCandidate) async throws -> CellRead?
     ) async throws -> [RecognizedLine] {
-        let cells = NoteLayout.candidates(in: drawing).flatMap(\.cells)
+        let cells = mergedCells(NoteLayout.candidates(in: drawing))
         var reads: [[Int]: CellRead] = [:]
         var readings: [NoteGrouping.Reading] = []
         for cell in cells {
@@ -39,6 +39,31 @@ enum NoteReading {
         }
         try Task.checkCancellation()
         return NoteGrouping.entries(from: readings, vocabulary: vocabulary).compactMap { line(for: $0, reads: reads, vocabulary: vocabulary) }
+    }
+
+    /// Layout cuts a row wherever there is a small gap, which also splits one word (`你 | 好`) or one Pinyin field
+    /// (`hǎo | xiang`) written with ordinary spacing. Neighbouring cells of the same writing size with only a tight
+    /// gap between them are one piece of writing, so they are read together, with the whole piece's context.
+    /// A clear gap, or a change of writing size (Pinyin beside Hanzi), still separates cells.
+    static func mergedCells(_ rows: [NoteLayout.RowCandidate]) -> [NoteLayout.CellCandidate] {
+        var result: [NoteLayout.CellCandidate] = []
+        for row in rows {
+            var current: NoteLayout.CellCandidate?
+            for cell in row.cells {
+                if var open = current, let gap = cell.gapBefore,
+                   gap.evidence == .tightGap, gap.scaleRatio < NoteLayout.scaleChangeRatio {
+                    open.strokeIndices = (open.strokeIndices + cell.strokeIndices).sorted()
+                    open.bounds = open.bounds.union(cell.bounds)
+                    open.scale = max(open.scale, cell.scale)
+                    current = open
+                } else {
+                    if let open = current { result.append(open) }
+                    current = cell
+                }
+            }
+            if let open = current { result.append(open) }
+        }
+        return result
     }
 
     private static let kinds = NoteGrouping.FieldKind.allCases
@@ -86,8 +111,17 @@ enum NoteReading {
         line.strokeIndices = entry.strokeIndices
         // Grouping's own doubts (for example a Pinyin that does not fit the Hanzi) travel with the note. A missing tone
         // mark is judged later against the word's Pinyin, so it is not repeated here.
-        let notes = entry.uncertainty.filter { !$0.hasPrefix("Pinyin has no tone marks") }
-        if !notes.isEmpty { line.reviewNote = notes.joined(separator: "; ") }
+        // Only doubts about the reading itself are carried (a Pinyin that does not fit its Hanzi, several Hanzi runs in
+        // one cell). Whether a field is merely missing is not a doubt: the suggestion fills it. A doubted reading
+        // never offers to replace the student's ink.
+        // A Pinyin that fits a vocabulary word the Hanzi only begins (好 + hǎo xiàng for 好像) is explained by the
+        // vocabulary itself, which also judges its tones; only an unexplained mismatch is a doubt here.
+        let explained = vocabulary.proposal(forRecognizedText: text) != nil
+        let notes = entry.uncertainty.filter { ($0.contains("doesn't match") && !explained) || $0.hasPrefix("Several Hanzi runs") }
+        if !notes.isEmpty {
+            line.reviewNote = notes.joined(separator: "; ")
+            line.inkEditSuppressed = true
+        }
         return line
     }
 }

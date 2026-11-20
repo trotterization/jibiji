@@ -36,7 +36,8 @@ struct RecognizedLine: Sendable, Equatable {
         } else {
             line.needsReview = true
         }
-        line.reviewNote = outcome.note
+        // Keep any doubt already attached (for example from grouping) beside this one.
+        line.reviewNote = [reviewNote, outcome.note].compactMap { $0 }.joined(separator: " ")
         line.inkEditSuppressed = true
         return line
     }

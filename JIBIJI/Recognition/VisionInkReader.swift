@@ -28,7 +28,8 @@ actor VisionInkReader {
             }
         }
         try Task.checkCancellation()
-        if lineCache.count >= 32 { lineCache.removeAll() }
+        // One entry per ink cell: a page read as notes has many cells, read again by Suggest and by Cards.
+        if lineCache.count >= 512 { lineCache.removeAll() }
         lineCache[key] = readings
         return readings
     }

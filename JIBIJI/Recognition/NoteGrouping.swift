@@ -287,10 +287,10 @@ enum NoteGrouping {
                 let between = below ? (o.minY >= a.maxY - 1 && o.maxY <= c.minY + 1) : (o.maxY <= a.minY + 1 && o.minY >= c.maxY - 1)
                 return between && min(o.maxX, c.maxX) - max(o.minX, c.minX) > 0
             }
-            // Stacked fields belong to the nearest note: the distance penalty scales with the anchor's own size, so a
-            // line just under one note is not pulled to the next note below it by a small "above" bonus.
-            let reach = max(40, Double(a.height) * 1.5)
-            return blocked ? nil : ((below ? 2 : 2.5) - Double(gap) / reach, true)
+            // Stacked fields belong to the nearest note. A field further away than about two lines of the anchor's own
+            // writing is a different note, and the nearer note wins by distance, not by the small "above" bonus.
+            if Double(gap) > max(60, 2 * Double(max(a.height, c.height))) { return nil }
+            return blocked ? nil : ((below ? 2 : 2.5) - Double(gap) / 80, true)
         }
         return nil
     }

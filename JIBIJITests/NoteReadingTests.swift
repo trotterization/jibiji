@@ -76,6 +76,51 @@ struct NoteReadingTests {
         #expect(lines.first { $0.text.hasPrefix("复习") }?.text == "复习 fùxí")
     }
 
+    @Test func wordsAndPinyinWrittenWithOrdinarySpacingStayTogether() async throws {
+        // One row: a two-character word (24 pt between characters) and Pinyin of two syllables (10 pt apart).
+        // Layout alone cuts both; they are one word and one Pinyin field and must be read and grouped as such.
+        let hanzi = ink("大人", x: 80, y: 100, size: 56, spacing: 24)
+        let pinyin = ink("一二", x: 270, y: 118, size: 20, spacing: 10)
+        let pieces = [Piece(drawing: hanzi, text: "好像"), Piece(drawing: pinyin, text: "hǎo xiàng")]
+        let drawing = PKDrawing(strokes: hanzi.strokes + pinyin.strokes)
+        let lines = try await NoteReading.lines(in: drawing) { strokes, _ in cellRead(for: strokes, pieces: pieces) }
+        #expect(lines.map(\.text) == ["好像 hǎo xiàng"])
+        #expect(lines.first?.strokeIndices?.count == drawing.strokes.count)
+        // The merged cells were read as one piece each, not one cell per character.
+        let seen = Box()
+        _ = try await NoteReading.lines(in: drawing) { strokes, _ in seen.add(strokes.count); return cellRead(for: strokes, pieces: pieces) }
+        #expect(seen.counts.sorted() == [hanzi.strokes.count, pinyin.strokes.count].sorted())
+    }
+
+    final class Box: @unchecked Sendable {
+        private let lock = NSLock(); private var values: [Int] = []
+        func add(_ n: Int) { lock.withLock { values.append(n) } }
+        var counts: [Int] { lock.withLock { values } }
+    }
+
+    @Test func aFarAwayEnglishLineIsItsOwnNoteNotAbsorbedByTheNearestOne() async throws {
+        // English-only line 178 pt above a note: further than two lines of the note's writing, so it is not its field.
+        let stray = ink("一二", x: 90, y: 100, size: 22)
+        let hanzi = ink("大人", x: 80, y: 300, size: 64)
+        let pieces = [Piece(drawing: stray, text: "weekend plans"), Piece(drawing: hanzi, text: "负责")]
+        let lines = try await NoteReading.lines(in: PKDrawing(strokes: stray.strokes + hanzi.strokes)) { strokes, _ in cellRead(for: strokes, pieces: pieces) }
+        #expect(Set(lines.map(\.text)) == ["weekend plans", "负责"])
+    }
+
+    @Test func groupingDoubtKeepsTheInkSafeAndSurvivesCrossChecking() async throws {
+        // A Pinyin that does not fit the Hanzi is a doubt about the reading: it travels with the note and blocks replacing ink.
+        let hanzi = ink("大人", x: 80, y: 100, size: 56)
+        let pinyin = ink("一二", x: 230, y: 118, size: 20)
+        let pieces = [Piece(drawing: hanzi, text: "负责"), Piece(drawing: pinyin, text: "fùxí")]
+        let lines = try await NoteReading.lines(in: PKDrawing(strokes: hanzi.strokes + pinyin.strokes)) { strokes, _ in cellRead(for: strokes, pieces: pieces) }
+        let line = try #require(lines.first)
+        #expect(line.inkEditSuppressed)
+        #expect(line.reviewNote?.contains("doesn't match") == true)
+        let crossChecked = line.crossChecked()
+        #expect(crossChecked.reviewNote?.contains("doesn't match") == true)
+        #expect(crossChecked.inkEditSuppressed)
+    }
+
     @Test func refinedCellKeepsItsRawReadingForTheWholeNote() async throws {
         let page = Page()
         var pieces = pieces(page)
@@ -146,7 +191,7 @@ struct NoteReadingTests {
         await model.flashcards.refresh(from: model.drawing, annotations: []).value
         let cards = Dictionary(uniqueKeysWithValues: model.flashcards.cards.map { ($0.front, $0.back) })
         #expect(cards["负责"] == "fùzé — to be responsible for")
-        #expect(cards["复习"] == nil || cards["复习"]?.contains("fùxí") == true)
+        #expect(cards["复习"] == "fùxí — to review")
         #expect(model.flashcards.cards.allSatisfy { !$0.back.contains("负责") })
     }
 
