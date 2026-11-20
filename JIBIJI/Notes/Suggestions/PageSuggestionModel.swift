@@ -125,7 +125,7 @@ struct PencilInkLineReader: InkLineReader {
 
 /// A provisional suggestion next to one line of ink. Never part of the ink.
 struct PendingSuggestion: Identifiable, Equatable {
-    let id = UUID()
+    var id = UUID()
     /// Ink revision this was computed from; it is dropped when the ink changes.
     let revision: Int
     var anchor: CGRect
@@ -138,6 +138,12 @@ struct PendingSuggestion: Identifiable, Equatable {
     /// Why this line's reading is uncertain beyond its Pinyin (e.g. two recognizers disagree). Never edits ink.
     var readingNote: String? = nil
     var inkEditSuppressed = false
+    /// The note this belongs to and the revision it was computed for; nil only for lines without strokes.
+    var noteID: UUID? = nil
+    var noteRevision: Int? = nil
+
+    /// What rejecting this suggestion rejects: the word proposed for this note, at this note revision.
+    var proposalKey: String { proposal.candidates.first?.hanzi ?? recognizedText }
 
     var candidate: SuggestionCandidate { proposal.candidates[selectedIndex] }
 
@@ -217,6 +223,9 @@ struct AcceptedAnnotation: Codable, Identifiable, Equatable {
     /// Identities of the original strokes this note (kept beside the ink) was accepted for. Optional so older
     /// saved notes still load. A later read of exactly these strokes is the same source, not a new note.
     var sourceStrokeIDs: [String]? = nil
+    /// The note (see ``NoteRegistry``) and its revision this was accepted for. Optional so older saved notes load.
+    var noteID: UUID? = nil
+    var noteRevision: Int? = nil
 
     /// A note's text split into parts. Parts joined by "·"; Hanzi, pinyin and anything else (gloss).
     struct ParsedText: Equatable {
@@ -276,6 +285,10 @@ final class PageSuggestionModel {
     private(set) var storageProblem: String?
 
     @ObservationIgnored private(set) var revision = 0
+    /// The page's notes: stable ids, independent revisions, rejections.
+    @ObservationIgnored private(set) var registry = NoteRegistry()
+    @ObservationIgnored private let registryStore: NoteRegistryStore
+    @ObservationIgnored private var canSaveRegistry = true
     @ObservationIgnored private let reader: any InkLineReader
     @ObservationIgnored private let vocabulary: StarterVocabulary
     @ObservationIgnored private let store: SuggestionStore
@@ -292,8 +305,16 @@ final class PageSuggestionModel {
     ) {
         self.pageID = pageID
         self.store = store
+        self.registryStore = NoteRegistryStore(directory: store.directory)
         self.reader = reader
         self.vocabulary = vocabulary
+        do {
+            registry = try registryStore.load(pageID: pageID)
+        } catch {
+            // Keep the unreadable file untouched; notes simply start fresh for this session and are not saved.
+            canSaveRegistry = false
+            Logger.notes.error("Couldn't read notes for \(pageID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
         do {
             annotations = try store.load(pageID: pageID)
         } catch {
@@ -312,11 +333,41 @@ final class PageSuggestionModel {
     /// The ink changed (stroke, erase, undo, redo): any pending result or running request is stale.
     ///
     /// Accepted notes are never removed or saved because of ink changes; see `isVisible(_:in:)`.
-    func sourceDidChange() {
+    ///
+    /// With the new `drawing`, a pending suggestion whose own note is untouched survives: the chip for note A is not
+    /// lost because the student wrote or erased something in note B. Without a drawing everything is dropped.
+    func sourceDidChange(drawing: PKDrawing? = nil) {
         revision += 1
         task?.cancel()
         task = nil
-        pending = []
+        if let drawing, !pending.isEmpty {
+            let ids = drawing.strokes.map(InkSelection.identity)
+            let present = Set(ids)
+            // Strokes that belong to some other note (another chip, an accepted note) are not this note's edits.
+            let claimed = annotations.reduce(into: Set<String>()) {
+                $0.formUnion($1.sourceStrokeIDs ?? [])
+                $0.formUnion($1.replacement?.replacementStrokeIDs ?? [])
+            }
+            pending = pending.filter { item in
+                guard !item.sourceStrokeIDs.isEmpty, item.sourceStrokeIDs.isSubset(of: present) else { return false }
+                // Nothing the student did lies in or just beside this note's own region.
+                let others = pending.reduce(into: claimed) { if $1.id != item.id { $0.formUnion($1.sourceStrokeIDs) } }
+                let region = PageFlashcards.relatedRegion(of: item.anchor)
+                return !drawing.strokes.indices.contains { i in
+                    !item.sourceStrokeIDs.contains(ids[i]) && !others.contains(ids[i]) && drawing.strokes[i].renderBounds.intersects(region)
+                }
+            }.map { item in
+                var kept = PendingSuggestion(revision: revision, anchor: item.anchor, recognizedText: item.recognizedText,
+                                             sourceText: item.sourceText, proposal: item.proposal,
+                                             selectedIndex: item.selectedIndex, sourceStrokeIDs: item.sourceStrokeIDs,
+                                             readingNote: item.readingNote, inkEditSuppressed: item.inkEditSuppressed,
+                                             noteID: item.noteID, noteRevision: item.noteRevision)
+                kept.id = item.id
+                return kept
+            }
+        } else {
+            pending = []
+        }
         status = .idle
     }
 
@@ -405,7 +456,19 @@ final class PageSuggestionModel {
                 guard let replacement = note.replacement else { return Self.isVisible(note, in: drawing) }
                 return ids.indices.contains { replacement.replacementStrokeIDs.contains(ids[$0]) && !drawing.strokes[$0].renderBounds.isEmpty }
             }
-            pending = lines.compactMap { line in
+            // Each line's own strokes (a grouped note names them; others take those inside their bounds), and its
+            // note record: stable id, independent revision.
+            let lineSources: [Set<String>] = lines.map { line in
+                line.strokeIndices.map { indices in
+                    Set(indices.filter(readable.strokes.indices.contains).map { readableIDs[$0] })
+                } ?? Set(InkSelection.indices(in: readable, bounds: line.bounds).map { InkSelection.identity(readable.strokes[$0]) })
+            }
+            let before = registry
+            let noteRecords = registry.reconcile(lines.indices.map { (lineSources[$0], lines[$0].bounds) },
+                                                 keeping: Set(annotations.compactMap(\.noteID)))
+            if registry != before { persistRegistry() }
+            pending = lines.indices.compactMap { index in
+                let line = lines[index]
                 let proposal: SuggestionProposal
                 var seen = Set<String>()
                 // Malformed mixed OCR (`x7大`, `a3b9`) is never offered as a word, whatever else the line holds.
@@ -430,10 +493,12 @@ final class PageSuggestionModel {
                     if !runs.isEmpty, !known, ReadingValidation.isWellFormed(line.text) { unmatched.append(line.text) }
                     return nil
                 }
-                // A grouped note names its own strokes; a line read by bounds alone takes those inside its bounds.
-                let sourceIDs: Set<String> = line.strokeIndices.map { indices in
-                    Set(indices.filter(readable.strokes.indices.contains).map { readableIDs[$0] })
-                } ?? Set(InkSelection.indices(in: readable, bounds: line.bounds).map { InkSelection.identity(readable.strokes[$0]) })
+                let sourceIDs = lineSources[index]
+                let record = noteRecords[index]
+                // Rejected for this note at this revision: stays quiet until the note's own source changes.
+                if let record, registry.isRejected(note: record.id, revision: record.revision, key: proposal.candidates.first?.hanzi ?? line.text) {
+                    return nil
+                }
                 // The same source as an accepted note: by the exact original strokes, or (older notes) by the text read.
                 let alreadyAccepted = visibleNotes.contains { note in
                     // Exact source strokes decide when known: an added, erased or moved stroke is a source change, even
@@ -454,7 +519,8 @@ final class PageSuggestionModel {
                 return PendingSuggestion(revision: revision, anchor: line.bounds, recognizedText: line.text,
                                          sourceText: line.sourceText, proposal: proposal,
                                          sourceStrokeIDs: sourceIDs,
-                                         readingNote: readingNote, inkEditSuppressed: suppressInk)
+                                         readingNote: readingNote, inkEditSuppressed: suppressInk,
+                                         noteID: record?.id, noteRevision: record?.revision)
             }
             // Only when nothing else was offered, so it never sits beside working suggestions looking like a failure.
             if pending.isEmpty, !unmatched.isEmpty {
@@ -477,7 +543,13 @@ final class PageSuggestionModel {
         pending[i].selectedIndex = index
     }
 
+    /// Skips a suggestion. It is remembered for this note at its current revision, so asking again does not offer
+    /// the same word for the same writing; it can return if the note's own source changes.
     func dismiss(_ id: UUID) {
+        if let item = pending.first(where: { $0.id == id }), let noteID = item.noteID, let revision = item.noteRevision {
+            registry.reject(note: noteID, revision: revision, key: item.proposalKey)
+            persistRegistry()
+        }
         pending.removeAll { $0.id == id }
     }
 
@@ -499,7 +571,8 @@ final class PageSuggestionModel {
             hanzi: suggestion.candidate.hanzi,
             pinyin: suggestion.candidate.pinyin,
             gloss: gloss,
-            sourceStrokeIDs: suggestion.sourceStrokeIDs.isEmpty ? nil : suggestion.sourceStrokeIDs.sorted()
+            sourceStrokeIDs: suggestion.sourceStrokeIDs.isEmpty ? nil : suggestion.sourceStrokeIDs.sorted(),
+            noteID: suggestion.noteID, noteRevision: suggestion.noteRevision
         )
         annotations.append(annotation)
         undoStack.append(annotation.id)
@@ -516,7 +589,7 @@ final class PageSuggestionModel {
                                       anchor: bounds,
                                       recognizedText: item.sourceText ?? item.recognizedText,
                                       hanzi: parts.hanzi, pinyin: parts.pinyin, gloss: parts.gloss,
-                                      replacement: recovery)
+                                      replacement: recovery, noteID: item.noteID, noteRevision: item.noteRevision)
         do {
             try store.save(annotations + [note], pageID: pageID)
             annotations.append(note)
@@ -579,7 +652,8 @@ final class PageSuggestionModel {
             return PendingSuggestion(revision: revision, anchor: item.anchor, recognizedText: item.recognizedText,
                                         sourceText: item.sourceText, proposal: item.proposal,
                                         selectedIndex: item.selectedIndex, sourceStrokeIDs: item.sourceStrokeIDs,
-                                        readingNote: item.readingNote, inkEditSuppressed: item.inkEditSuppressed)
+                                        readingNote: item.readingNote, inkEditSuppressed: item.inkEditSuppressed,
+                                        noteID: item.noteID, noteRevision: item.noteRevision)
         }
     }
 
@@ -594,6 +668,15 @@ final class PageSuggestionModel {
         annotations.removeAll { $0.id == id }
         undoStack.removeAll { $0 == id }
         persist()
+    }
+
+    private func persistRegistry() {
+        guard canSaveRegistry else { return }
+        do {
+            try registryStore.save(registry, pageID: pageID)
+        } catch {
+            Logger.notes.error("Couldn't save notes for \(self.pageID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func persist() {

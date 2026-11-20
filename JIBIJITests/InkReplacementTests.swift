@@ -183,6 +183,8 @@ struct InkReplacementTests {
         page.drawingDidChange(original)
         page.suggestions.request(for: original); await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
+        // Suggest already recorded this note, so the folder exists: swap it for a file to make every later save fail.
+        try? FileManager.default.removeItem(at: folder)
         try Data("blocked".utf8).write(to: folder)
         #expect(!page.replaceSuggestion(item.id, with: "牛"))
         #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: original))

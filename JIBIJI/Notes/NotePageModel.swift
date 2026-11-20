@@ -104,7 +104,7 @@ final class NotePageModel {
     func drawingDidChange(_ newDrawing: PKDrawing) {
         guard isEditable else { return }
         drawing = newDrawing
-        suggestions.sourceDidChange()
+        suggestions.sourceDidChange(drawing: newDrawing)
         flashcards.inkChanged(newDrawing)
         hasUnsavedChanges = true
         state = .unsaved
