@@ -19,19 +19,28 @@ struct SuggestionStage1Tests {
         private let lock = NSLock()
         private var regions: [Region]
         private var calls: [[String]] = []
+        /// Identities of the strokes the student wrote. Anything else (generated replacement ink) is "noise".
+        private var allowed: Set<String>
         let noise: Region?
 
-        init(regions: [Region], noise: Region? = nil) { self.regions = regions; self.noise = noise }
+        init(regions: [Region], writing: [PKDrawing] = [], noise: Region? = nil) {
+            self.regions = regions
+            self.allowed = Set(writing.flatMap { $0.strokes.map(InkSelection.identity) })
+            self.noise = noise
+        }
+        func allow(_ strokes: [PKStroke]) { lock.withLock { allowed.formUnion(strokes.map(InkSelection.identity)) } }
         var seen: [[String]] { lock.withLock { calls } }
         func setRegions(_ new: [Region]) { lock.withLock { regions = new } }
 
         func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
-            let current = lock.withLock { regions }
+            let (current, allowedIDs) = lock.withLock { (regions, allowed) }
             lock.withLock { calls.append(drawing.strokes.map(InkSelection.identity)) }
             var lines: [RecognizedLine] = []
             var claimed = Set<Int>()
             for region in current {
-                let hits = drawing.strokes.indices.filter { drawing.strokes[$0].renderBounds.intersects(region.bounds) }
+                let hits = drawing.strokes.indices.filter {
+                    allowedIDs.contains(InkSelection.identity(drawing.strokes[$0])) && drawing.strokes[$0].renderBounds.intersects(region.bounds)
+                }
                 guard !hits.isEmpty else { continue }
                 claimed.formUnion(hits)
                 lines.append(RecognizedLine(text: region.text, bounds: region.bounds, readings: region.readings))
@@ -60,7 +69,7 @@ struct SuggestionStage1Tests {
         let reader = RegionReader(regions: [
             .init(bounds: hanziInk.bounds, text: "大", readings: ["大", "牛"]),
             .init(bounds: pinyinInk.bounds, text: pinyinText),
-        ], noise: noise)
+        ], writing: [hanziInk, pinyinInk], noise: noise)
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
         page.drawingDidChange(PKDrawing(strokes: hanziInk.strokes + pinyinInk.strokes))
         return Fixture(page: page, reader: reader, hanziInk: hanziInk, pinyinInk: pinyinInk)
@@ -103,6 +112,19 @@ struct SuggestionStage1Tests {
         #expect(Set(fingerprints.map { $0.joined() }).count == 1, "repeated Suggest must be idempotent")
     }
 
+    @Test func generatedInkThatReadsAsPlausibleTextStillProducesNoSuggestion() async throws {
+        let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
+        // Well-formed (so validation alone would not stop it) and in the starter vocabulary: only excluding the
+        // generated strokes keeps this from being offered as a second, bogus "correction".
+        let noise = RegionReader.Region(bounds: .zero, text: "fùzé responsible for?")
+        let f = fixture(folder: folder, noise: noise, pinyinText: "hello world")
+        await suggest(f.page)
+        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "大" })
+        #expect(f.page.replaceSuggestion(item.id, with: "牛"))
+        await suggest(f.page)
+        #expect(f.page.suggestions.pending.isEmpty)
+    }
+
     @Test func sourceRegionAnchoringStaysOnTheStudentsStrokes() async throws {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let f = fixture(folder: folder)
@@ -117,6 +139,8 @@ struct SuggestionStage1Tests {
         #expect(remaining.sourceStrokeIDs == Set(f.pinyinInk.strokes.map(InkSelection.identity)))
         // Replacing the remaining note works against the full page and leaves the first replacement alone.
         let firstReplacement = try #require(f.page.latestVisibleReplacement)
+        let generated = try #require(firstReplacement.replacement?.replacementStrokeIDs)
+        #expect(Set(try #require(f.reader.seen.last)).isDisjoint(with: generated))
         #expect(f.page.replaceSuggestion(remaining.id, with: "负责"))
         #expect(f.page.suggestions.annotations.count == 2)
         #expect(f.page.suggestions.annotations.first { $0.id == firstReplacement.id }?.text == "牛")
@@ -125,7 +149,7 @@ struct SuggestionStage1Tests {
     @Test func aPageWithOnlyAcceptedReplacementsDoesNotCallTheRecognizer() async throws {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let ink = SyntheticInk.drawing(writing: "大")
-        let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "大", readings: ["大", "牛"])])
+        let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "大", readings: ["大", "牛"])], writing: [ink])
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
         page.drawingDidChange(ink)
         await suggest(page)
@@ -184,6 +208,7 @@ struct SuggestionStage1Tests {
         // The student adds a stroke inside that note: its source changed, so it is evaluated again.
         let extra = SyntheticInk.stroke(through: [CGPoint(x: f.pinyinInk.bounds.minX + 10, y: f.pinyinInk.bounds.midY),
                                                    CGPoint(x: f.pinyinInk.bounds.maxX - 10, y: f.pinyinInk.bounds.midY)])
+        f.reader.allow([extra])
         f.page.drawingDidChange(PKDrawing(strokes: f.page.drawing.strokes + [extra]))
         await suggest(f.page)
         #expect(f.page.suggestions.pending.contains { $0.recognizedText.hasPrefix("fùzé") })
@@ -200,7 +225,7 @@ struct SuggestionStage1Tests {
         """
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data(legacyJSON.utf8).write(to: folder.appending(path: "page-1.annotations.json"))
-        let reader = RegionReader(regions: [.init(bounds: hanziInk.bounds, text: "fùzé responsible for?")])
+        let reader = RegionReader(regions: [.init(bounds: hanziInk.bounds, text: "fùzé responsible for?")], writing: [hanziInk])
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
         #expect(page.suggestions.annotations.first?.sourceStrokeIDs == nil)
         page.drawingDidChange(hanziInk)
@@ -214,7 +239,7 @@ struct SuggestionStage1Tests {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let ink = SyntheticInk.drawing(writing: "大")
         let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "大",
-                                                  readings: ["大", "x7牛", "牛 a3b9", "fu2ZeBa 我", "牛", "\u{FFFD}"])])
+                                                  readings: ["大", "x7牛", "牛 a3b9", "fu2ZeBa 我", "牛", "\u{FFFD}"])], writing: [ink])
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
         page.drawingDidChange(ink)
         await suggest(page)
@@ -225,7 +250,7 @@ struct SuggestionStage1Tests {
     @Test func aWhollyMalformedReadingOffersNothingAndDoesNotQuoteTheNoise() async throws {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let ink = SyntheticInk.drawing(writing: "大")
-        let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "x7大 a3b9", readings: ["x7大 a3b9", "大3 b7"])])
+        let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "x7大 a3b9", readings: ["x7大 a3b9", "大3 a3b9"])], writing: [ink])
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
         page.drawingDidChange(ink)
         await suggest(page)
@@ -241,7 +266,7 @@ struct SuggestionStage1Tests {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let ink = SyntheticInk.drawing(writing: "大")
         // Hanzi prefix plus untoned Pinyin: well formed, so it still reaches the vocabulary.
-        let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "好 hǎo xiang")])
+        let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "好 hǎo xiang")], writing: [ink])
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
         page.drawingDidChange(ink)
         await suggest(page)
@@ -255,20 +280,22 @@ struct SuggestionStage1Tests {
 struct ReadingValidationTests {
     @Test(arguments: [
         "好 hǎo xiang", "农夫市集 nóngfū shìjí", "虽然…但是… Example: although it rains", "hao3 xiang4", "fu4ze2",
-        "(1) to seem like; ~ like", "A/B 2 years", "iPad", "负责 · fùzé · to be in charge of", "大", "lü4", "3",
+        "(1) to seem like; ~ like", "A/B 2 years", "iPad", "iPhoneX", "负责 · fùzé · to be in charge of", "大", "lü4", "lv4", "3",
+        "HSK4", "mp3", "3rd", "10am", "第1课", "2024年", "hao3, xiang4.", "(1)to", "好 hǎo xiang",
     ])
     func acceptsRealWriting(_ text: String) {
         #expect(ReadingValidation.isWellFormed(text), "\(text)")
     }
 
     @Test(arguments: [
-        "x7大", "大3", "a3b9", "fu2ZeBa", "hao5x", "fuze7", "\u{FFFD}", "好\u{0001}", "", "   ", "牛 a3b9",
+        "x7大", "大3a", "a3b9", "fu2ZeBaKa", "fu2ZeBa", "hao5x", "\u{FFFD}", "好\u{0001}", "", "   ", "牛 a3b9",
     ])
     func rejectsMalformedMixedOCR(_ text: String) {
         #expect(!ReadingValidation.isWellFormed(text), "\(text.debugDescription)")
     }
 
     @Test func rejectsOverlongReadings() {
-        #expect(!ReadingValidation.isWellFormed(String(repeating: "大", count: 201)))
+        #expect(!ReadingValidation.isWellFormed(String(repeating: "大", count: 501)))
+        #expect(ReadingValidation.isWellFormed(String(repeating: "大", count: 300)))
     }
 }
