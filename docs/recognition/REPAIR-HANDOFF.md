@@ -7,7 +7,11 @@ Supersedes the "Next repair assignment" in `HANDOFF.md`. Design: `repair-flow.md
 | Item | Value |
 |---|---|
 | Branch | `task/recognition-repair` (from `d28b745` = PR #25 stage 3 + PR #27 docs) |
-| Draft PR | see the PR for this branch (base: PR #25's branch; nothing here is merged) |
+| Draft PR | https://github.com/trotterization/jibiji/pull/28 (base: PR #25's branch; nothing merged) |
+| Commit | `38671b3` (installed on the iPad; Debug build stamp `38671b3`) |
+| Independent review | Fresh read-only reviewer found: short real English wrongly rejected as misfiled Pinyin; unresolved English could still yield a dictionary-gloss card; text-accepted older notes could stop matching; loose gloss-substring matching. All fixed with tests. Remaining, not fixed: proper nouns/abbreviations/accented loanwords fail the English spell check and become `unresolved` (safe, user edits); the spell check runs through the main thread (cached; no deadlock seen); simulator-only `isEnglish` tests depend on the device spell-check dictionary. |
+| Tests | 259 passing in the Simulator (1 known Simulator-only issue). Injected readers; not handwriting accuracy. |
+| Installed | Signed Debug build installed over the existing app via devicectl; data untouched. |
 | Not included | PR #26 stage-4 records (unvalidated; not merged, not deployed) |
 | Build stamp | Debug: bottom-right of the Home screen and the top of "Check recognition" show `build <git short SHA>` plus flags |
 
