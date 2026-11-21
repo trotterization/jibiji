@@ -77,6 +77,11 @@ struct StarterVocabulary: Sendable {
     ])
 
     var entries: [Entry]
+    /// An optional offline dictionary consulted when no curated entry matches.
+    var lexicon: Lexicon? = nil
+
+    /// The curated entries first, then the bundled CC-CEDICT dictionary. What the app uses.
+    static var full: StarterVocabulary { StarterVocabulary(entries: standard.entries, lexicon: Lexicon.shared) }
 
     // MARK: - Normalizing
 
@@ -153,6 +158,21 @@ struct StarterVocabulary: Sendable {
     /// Conservative: needs the entry's pinyin (tones optional) or its Hanzi in the text. Any other Latin
     /// words must be a run of that entry's English gloss, otherwise the provider abstains.
     func proposal(forRecognizedText text: String) -> SuggestionProposal? {
+        if let curated = match(in: entries, text: text) { return curated }
+        guard let lexicon else { return nil }
+        let rows = lexicon.candidates(forText: text)
+        // The best dictionary entry decides; the other entries are real alternatives (homophones, other readings).
+        for (index, row) in rows.enumerated() {
+            guard var proposal = match(in: [row.entry], text: text) else { continue }
+            let others = rows.enumerated().filter { $0.offset != index }.map { $0.element.entry.candidate }
+            proposal.candidates += others.filter { !proposal.candidates.contains($0) }.prefix(4)
+            return proposal
+        }
+        return nil
+    }
+
+    /// The matcher: whether `entries` fit the recognized text, and what is left to offer.
+    private func match(in entries: [Entry], text: String) -> SuggestionProposal? {
         let pairs = Self.latinTokenPairs(text)
         let tokens = pairs.map(\.folded)
         let runs = Self.hanziRuns(in: text)

@@ -63,7 +63,9 @@ final class NotePageModel {
         self.suggestions = PageSuggestionModel(
             pageID: pageID,
             store: SuggestionStore(directory: store.directory),
-            reader: suggestionReader
+            reader: suggestionReader,
+            // The app consults the offline CC-CEDICT dictionary; tests that inject a reader keep the small starter list.
+            vocabulary: lineReader == nil ? .full : .standard
         )
         self.flashcards = PageFlashcards(
             pageID: pageID,
