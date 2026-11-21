@@ -79,9 +79,11 @@ enum NoteGrouping {
 
         let folded = tokens.map { StarterVocabulary.latinTokens($0).joined() }
         let start = tokens.indices.first { i in
-            toneMarked.contains(where: tokens[i].contains) || vocabularyKnows(Array(folded[i...]), vocabulary)
+            toneMarked.contains(where: tokens[i].contains) || hasDiacritic(tokens[i]) || vocabularyKnows(Array(folded[i...]), vocabulary)
         }
-        guard let start, isSyllable(folded[start]) else {
+        // A word with a tone-like diacritic was meant as Pinyin even when OCR garbled it (`hňo`): it stays in the
+        // Pinyin position and is validated later. It is never filed as English.
+        guard let start, isSyllable(folded[start]) || hasDiacritic(tokens[start]) else {
             if tokens.allSatisfy({ isSyllable(StarterVocabulary.latinTokens($0).joined()) }) {
                 result.ambiguousLatin = tokens.joined(separator: " ")
             } else {
@@ -90,11 +92,16 @@ enum NoteGrouping {
             return result
         }
         var end = start + 1
-        while end < tokens.count, isSyllable(folded[end]) { end += 1 }
+        while end < tokens.count, isSyllable(folded[end]) || hasDiacritic(tokens[end]) { end += 1 }
         result.pinyin = tokens[start..<end].joined(separator: " ")
         let rest = Array(tokens[..<start]) + Array(tokens[end...])
         if !rest.isEmpty { result.english = rest.joined(separator: " ") }
         return result
+    }
+
+    static func hasDiacritic(_ token: String) -> Bool {
+        token.decomposedStringWithCanonicalMapping.unicodeScalars.contains { (0x0300...0x036F).contains($0.value) && $0.value != 0x0308 }
+            || token.precomposedStringWithCanonicalMapping.contains { !$0.isASCII && $0.isLetter && !(0x3400...0x9FFF).contains($0.unicodeScalars.first!.value) }
     }
 
     private static func vocabularyKnows(_ folded: [String], _ vocabulary: StarterVocabulary) -> Bool {
@@ -141,16 +148,84 @@ enum NoteGrouping {
     // MARK: - Grouping
 
     /// Groups cells into entries. `readings` are the cells of every row in reading order.
-    static func entries(from readings: [Reading], vocabulary: StarterVocabulary = .standard) -> [Entry] {
-        struct Piece {
-            var reading: Reading
-            var parsed: Parsed
-            var cellText: String
+    private struct Piece {
+        var reading: Reading
+        var parsed: Parsed
+        var cellText: String
+    }
+
+    /// Latin writing right beside a Hanzi that is *almost* the start of its romanization (`ho` for 好 `hao`) is
+    /// Pinyin the recognizer lost a tone mark from, not English. It is filed as Pinyin, where it fails validation and
+    /// stays unresolved, instead of becoming the English field. Stacked writing is not judged this way.
+    private static func reclassifyMisreadPinyin(_ input: [Piece], vocabulary: StarterVocabulary) -> [Piece] {
+        var pieces = input
+        for index in pieces.indices {
+            let p = pieces[index]
+            guard p.parsed.hanzi == nil, p.parsed.pinyin == nil, let english = p.parsed.english else { continue }
+            let letters = StarterVocabulary.latinTokens(english).joined()
+            guard letters.count >= 2, letters.count <= 8 else { continue }
+            let cell = p.reading.cell.bounds
+            let anchor = pieces.filter { a in
+                guard let hanzi = a.parsed.hanzi, !hanzi.isEmpty else { return false }
+                let b = a.reading.cell.bounds
+                return cell.minX >= b.maxX - 1 && min(b.maxY, cell.maxY) - max(b.minY, cell.minY) > 0.3 * min(b.height, cell.height)
+            }.min { $0.reading.cell.bounds.maxX < $1.reading.cell.bounds.maxX ? false : true }
+            guard let hanzi = anchor?.parsed.hanzi else { continue }
+            let rom = ReadingCrossCheck.romanization(of: hanzi)
+            let vocab = vocabulary.entries.filter { $0.hanzi.hasPrefix(hanzi) }.map { $0.syllables.joined() }
+            let near = ([rom] + vocab).contains { target in
+                !target.isEmpty && ((max(1, letters.count - 1))...(letters.count + 1)).contains { n in
+                    n <= target.count && StarterVocabulary.editDistance(letters, String(target.prefix(n))) <= 1
+                }
+            }
+            if near {
+                var parsed = p.parsed
+                parsed.pinyin = english
+                parsed.english = nil
+                parsed.notes.append("“\(english)” looks like a misread Pinyin for \(hanzi)")
+                pieces[index].parsed = parsed
+            }
         }
-        let pieces = readings.compactMap { reading -> Piece? in
+        return pieces
+    }
+
+    /// Pinyin written with a word space (`hǎo | xiang`) is several cells. A Pinyin piece followed on the same row by
+    /// pieces that are only Pinyin syllables is one Pinyin field; its syllables are not English and are not lost.
+    private static func joinLatinNeighbours(_ input: [Piece], vocabulary: StarterVocabulary) -> [Piece] {
+        var pieces = input
+        var index = 0
+        while index < pieces.count {
+            let a = pieces[index]
+            guard a.parsed.hanzi == nil, a.parsed.pinyin != nil, a.parsed.english == nil else { index += 1; continue }
+            let next = pieces.indices.filter { $0 != index }.compactMap { j -> (Int, CGFloat)? in
+                let b = pieces[j]
+                guard b.parsed.hanzi == nil, b.parsed.english == nil, b.parsed.pinyin != nil || b.parsed.ambiguousLatin != nil else { return nil }
+                let ab = a.reading.cell.bounds, bb = b.reading.cell.bounds
+                let overlap = min(ab.maxY, bb.maxY) - max(ab.minY, bb.minY)
+                let gap = bb.minX - ab.maxX
+                let reach = 3.5 * max(a.reading.cell.scale, b.reading.cell.scale, 12)
+                guard overlap > 0.4 * min(ab.height, bb.height), gap >= -1, gap <= reach else { return nil }
+                return (j, gap)
+            }.min { $0.1 < $1.1 }
+            guard let (j, _) = next else { index += 1; continue }
+            let b = pieces[j]
+            let cell = NoteLayout.CellCandidate(
+                strokeIndices: (a.reading.cell.strokeIndices + b.reading.cell.strokeIndices).sorted(),
+                bounds: a.reading.cell.bounds.union(b.reading.cell.bounds), column: a.reading.cell.column,
+                scale: max(a.reading.cell.scale, b.reading.cell.scale), gapBefore: a.reading.cell.gapBefore)
+            let text = a.cellText + " " + b.cellText
+            pieces[index] = Piece(reading: .init(cell: cell, text: text), parsed: parse(text, vocabulary: vocabulary), cellText: text)
+            pieces.remove(at: j)
+            index = 0   // the joined piece may take the next syllable too
+        }
+        return pieces
+    }
+
+    static func entries(from readings: [Reading], vocabulary: StarterVocabulary = .standard) -> [Entry] {
+        let pieces = joinLatinNeighbours(reclassifyMisreadPinyin(readings.compactMap { reading -> Piece? in
             guard let text = reading.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
             return Piece(reading: reading, parsed: parse(text, vocabulary: vocabulary), cellText: text)
-        }
+        }, vocabulary: vocabulary), vocabulary: vocabulary)
 
         func field(_ text: String, _ piece: Piece) -> Field {
             Field(text: text, cellText: piece.cellText, strokeIndices: piece.reading.cell.strokeIndices, bounds: piece.reading.cell.bounds)

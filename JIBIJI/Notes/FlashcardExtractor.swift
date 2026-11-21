@@ -32,6 +32,51 @@ enum FlashcardExtractor {
         return vocab(text, source: source, vocabulary: vocabulary)
     }
 
+    /// The shared path for a recognized note: special card kinds are decided from its clean text, and an ordinary
+    /// term card is built from the validated fields, so Pinyin is never filed as English and English is never invented.
+    static func extract(from line: RecognizedLine, vocabulary: StarterVocabulary = .standard) -> FlashcardDraft? {
+        guard let resolved = line.resolved else { return extract(from: line.text, vocabulary: vocabulary) }
+        let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let special = labeled(text) != nil || text.contains("→") || text.contains("->")
+            || equation(text, source: text) != nil || grammar(text, source: text, vocabulary: vocabulary) != nil || idiom(text, source: text) != nil
+        if special {
+            var draft = extract(from: text, vocabulary: vocabulary)
+            // Text built without an unresolved field is a partial card: it must be checked.
+            if resolved.fields.contains(where: { $0.1.status == .unresolved }) { draft?.needsReview = true }
+            return draft
+        }
+        // English the student wrote but that could not be read is never replaced by the dictionary's English.
+        if resolved.english.status == .unresolved { return nil }
+        guard resolved.hanzi.isUsable, let hanzi = resolved.hanzi.value, FieldValidation.isHanzi(hanzi) else { return nil }
+        let entry = vocabulary.entries.first { $0.hanzi == hanzi }
+        var review = !resolved.hanzi.isSolid || line.needsReview
+        var pinyin = resolved.pinyin.isUsable ? resolved.pinyin.value : nil
+        if resolved.pinyin.status == .unresolved || resolved.pinyin.status == .tentative { review = true }
+        if let entry, let written = pinyin {
+            if FieldValidation.letters(FieldValidation.words(written)) == entry.syllables.joined() {
+                // The dictionary reading is the evidence when the letters agree; written tones that conflict are kept and flagged.
+                if RecognitionCrossCheck.pinyinAgrees(written, with: entry.pinyin) { pinyin = entry.pinyin } else { review = true }
+            }
+        } else if entry == nil {
+            review = true   // a term the starter vocabulary has never heard of
+        }
+        var gloss = resolved.english.isUsable ? resolved.english.value : nil
+        if resolved.english.status == .tentative { review = true }
+        var back: String
+        if let written = gloss {
+            let grounded = entry?.glosses.contains { $0.caseInsensitiveCompare(written) == .orderedSame } ?? false
+            if !grounded { review = true }
+            if written.contains("?") || written.contains("？") { review = true }
+            back = pinyin.map { "\($0) — \(written)" } ?? written
+        } else {
+            // No English was written: only a real vocabulary entry can supply one. Otherwise no card.
+            guard let entry else { return nil }
+            gloss = entry.glosses[0]
+            back = "\(pinyin ?? entry.pinyin) — \(entry.glosses[0])"
+        }
+        return FlashcardDraft(front: hanzi, back: back, kind: .vocabulary, sourceText: line.rawText, needsReview: review)
+    }
+
     // MARK: - Labels
 
     private static let labels: [(String, FlashcardKind)] = [

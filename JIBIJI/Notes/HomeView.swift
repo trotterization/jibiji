@@ -78,6 +78,9 @@ struct HomeView: View {
         }
         .scrollIndicators(.hidden)
         .safeAreaInset(edge: .top, spacing: 0) { topBar }
+        #if DEBUG
+        .overlay(alignment: .bottomTrailing) { BuildStamp.label }
+        #endif
         .background(Theme.surface.ignoresSafeArea())
         .tint(.primary)
         .animation(Theme.Motion.list, value: notebook.pageIDs)

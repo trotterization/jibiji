@@ -5,6 +5,8 @@ struct JIBIJIApp: App {
     @State private var notebook = NotebookModel(store: .forLaunch())
     @Environment(\.scenePhase) private var scenePhase
 
+    init() { Lexicon.warmUp() }
+
     var body: some Scene {
         WindowGroup {
             RootView(notebook: notebook)

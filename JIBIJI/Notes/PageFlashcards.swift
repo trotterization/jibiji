@@ -216,7 +216,7 @@ final class PageFlashcards {
             // Exact source text only; if several lines match, the one overlapping the note's anchor most.
             func textMatches(_ index: Int) -> Bool {
                 note.replacement != nil ? lines[index].text == note.text && note.anchor.intersects(lines[index].bounds)
-                    : lines[index].rawText == note.recognizedText && note.anchor.intersects(lines[index].bounds)
+                    : lines[index].wasRead(as: note.recognizedText) && note.anchor.intersects(lines[index].bounds)
             }
             var candidates = lines.indices.filter(textMatches)
             if needsStrokeMatch, note.replacement == nil, let ids = note.sourceStrokeIDs, !ids.isEmpty {
@@ -283,7 +283,7 @@ final class PageFlashcards {
             cards[i].needsReview = true
         }
         for (index, line) in lines.enumerated() where !claimedLines.contains(index) {
-            guard var draft = FlashcardExtractor.extract(from: line.text, vocabulary: vocabulary) else { continue }
+            guard var draft = FlashcardExtractor.extract(from: line, vocabulary: vocabulary) else { continue }
             draft.sourceText = line.rawText
             draft.needsReview = draft.needsReview || line.needsReview
             let key = Self.dedupeKey(front: draft.front, back: draft.back, kind: draft.kind)

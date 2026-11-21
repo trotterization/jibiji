@@ -80,6 +80,9 @@ struct SuggestionOverlay: View {
                     Text(line)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 420, alignment: .leading)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
                         .panel(radius: 10)
@@ -203,15 +206,17 @@ private struct PendingChip: View {
 
             Menu {
                 if item.hasAlternatives {
-                    Section("Other readings") {
+                    Section("Other matches") {
                         ForEach(Array(item.proposal.candidates.enumerated()), id: \.offset) { index, candidate in
                             Button {
                                 select(index)
                             } label: {
+                                // Hanzi alone is ambiguous (好 hǎo / 好 hào), so each choice shows its Pinyin and meaning.
+                                let title = [candidate.hanzi, candidate.pinyin, candidate.gloss].filter { !$0.isEmpty }.joined(separator: "  ")
                                 if index == item.selectedIndex {
-                                    Label(candidate.hanzi, systemImage: "checkmark")
+                                    Label(title, systemImage: "checkmark")
                                 } else {
-                                    Text(candidate.hanzi)
+                                    Text(title)
                                 }
                             }
                         }

@@ -73,7 +73,7 @@ struct InkReplacementTests {
         let initial = PKDrawing(strokes: original.strokes + neighbor.strokes)
         try store.save(initial, pageID: "page-1")
         let page = NotePageModel(pageID: "page-1", store: store,
-                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["大", "牛"])]))
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "复习", bounds: original.bounds)]))
         page.suggestions.request(for: page.drawing)
         await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
@@ -106,7 +106,7 @@ struct InkReplacementTests {
         let neighbor = SyntheticInk.drawing(writing: "人", origin: CGPoint(x: 400, y: 160))
         let initial = PKDrawing(strokes: original.strokes + neighbor.strokes)
         let page = NotePageModel(pageID: "page-1", store: store,
-                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["牛"])]))
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "复习", bounds: original.bounds)]))
         page.drawingDidChange(initial)
         page.suggestions.request(for: page.drawing); await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
@@ -141,7 +141,7 @@ struct InkReplacementTests {
         let original = SyntheticInk.drawing(writing: "大")
         let neighbor = SyntheticInk.drawing(writing: "人", origin: CGPoint(x: 400, y: 160))
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder),
-                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["大"])]))
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "复习", bounds: original.bounds)]))
         page.drawingDidChange(PKDrawing(strokes: original.strokes + neighbor.strokes))
         page.suggestions.request(for: page.drawing); await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
@@ -179,7 +179,7 @@ struct InkReplacementTests {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let original = SyntheticInk.drawing(writing: "大")
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder),
-                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["大"])]))
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "复习", bounds: original.bounds)]))
         page.drawingDidChange(original)
         page.suggestions.request(for: original); await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)

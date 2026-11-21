@@ -22,6 +22,11 @@ struct SuggestionProposal: Equatable, Sendable {
     /// How the student's written Pinyin compares with the word's Pinyin. Judged only against Hanzi that is
     /// actually written, since handwriting recognition alone can't tell a misspelling from a misread.
     var pinyinState: PinyinState = .notWritten
+    /// The Pinyin offered is the dictionary's, because the written Pinyin could not be read as spelled.
+    var pinyinFromDictionary = false
+    /// Every reader agreed on the Pinyin as written and only its tone marks differ from the dictionary's: a slip in the
+    /// writing, not a misread. Replacing writes the dictionary's Pinyin.
+    var correctsConfirmedPinyin = false
     var pinyinAlreadyWritten: Bool { pinyinState != .notWritten }
     /// Exact written fields, retained when replacing the whole source line.
     var writtenPinyin: String? = nil
@@ -77,6 +82,11 @@ struct StarterVocabulary: Sendable {
     ])
 
     var entries: [Entry]
+    /// An optional offline dictionary consulted when no curated entry matches.
+    var lexicon: Lexicon? = nil
+
+    /// The curated entries first, then the bundled CC-CEDICT dictionary. What the app uses.
+    static var full: StarterVocabulary { StarterVocabulary(entries: standard.entries, lexicon: Lexicon.shared) }
 
     // MARK: - Normalizing
 
@@ -153,6 +163,56 @@ struct StarterVocabulary: Sendable {
     /// Conservative: needs the entry's pinyin (tones optional) or its Hanzi in the text. Any other Latin
     /// words must be a run of that entry's English gloss, otherwise the provider abstains.
     func proposal(forRecognizedText text: String) -> SuggestionProposal? {
+        if let curated = match(in: entries, text: text) { return curated }
+        guard let lexicon else { return nil }
+        let rows = lexicon.candidates(forText: text)
+        // The best dictionary entry decides; the other entries are real alternatives (homophones, other readings).
+        for (index, row) in rows.enumerated() {
+            guard var proposal = match(in: [row.entry], text: text) else { continue }
+            let others = rows.enumerated().filter { $0.offset != index }.map { $0.element.entry.candidate }
+            proposal.candidates += others.filter { !proposal.candidates.contains($0) }.prefix(4)
+            return proposal
+        }
+        return nil
+    }
+
+    /// A proposal rebuilt from the dictionary when the written Pinyin could not be read as spelled: the Hanzi is
+    /// written, and the readers' guesses (`latinEvidence`) are close to one of the dictionary words that begin with it.
+    /// Always uncertain: the Pinyin is the dictionary's, not the student's, so it never changes the ink on its own.
+    func repairedProposal(forRecognizedText text: String, latinEvidence: [String]) -> SuggestionProposal? {
+        guard let lexicon, !latinEvidence.isEmpty else { return nil }
+        let runs = Self.hanziRuns(in: text)
+        if runs.isEmpty {
+            // Pinyin with no Hanzi written: the dictionary word is a guess from spelling and tones alone, offered only as a note.
+            let rows = lexicon.repairCandidates(forPinyinReadings: latinEvidence)
+            guard let best = rows.first else { return nil }
+            _ = best
+            return SuggestionProposal(
+                candidates: rows.map(\.entry.candidate),
+                hanziAlreadyWritten: false,
+                glossAlreadyWritten: false,
+                pinyinState: .possibleSpelling(written: text.split(whereSeparator: \.isWhitespace).joined(separator: " ")),
+                pinyinFromDictionary: true
+            )
+        }
+        guard runs.count == 1, let run = runs.first else { return nil }
+        let rows = lexicon.repairCandidates(hanziPrefix: run, readings: latinEvidence)
+        guard let best = rows.first else { return nil }
+        let candidates = rows.map(\.entry.candidate)
+        let writtenPinyin = text.split(whereSeparator: \.isWhitespace)
+            .filter { !$0.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) } }.joined(separator: " ")
+        return SuggestionProposal(
+            candidates: candidates,
+            hanziAlreadyWritten: best.hanzi == run,
+            glossAlreadyWritten: false,
+            hanziPrefixWritten: best.hanzi == run ? "" : run,
+            pinyinState: .possibleSpelling(written: writtenPinyin.isEmpty ? (latinEvidence.first ?? "") : writtenPinyin),
+            pinyinFromDictionary: true
+        )
+    }
+
+    /// The matcher: whether `entries` fit the recognized text, and what is left to offer.
+    private func match(in entries: [Entry], text: String) -> SuggestionProposal? {
         let pairs = Self.latinTokenPairs(text)
         let tokens = pairs.map(\.folded)
         let runs = Self.hanziRuns(in: text)
