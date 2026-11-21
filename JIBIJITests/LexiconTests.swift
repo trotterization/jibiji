@@ -136,5 +136,15 @@ import Testing
         #expect(rows.first?.hanzi == "学习")
         #expect(!rows.contains { $0.hanzi == "血洗" })
     }
+
+    // MARK: - Word frequency
+
+    @Test func commonWordsRankBeforeRareOnesSpelledTheSame() throws {
+        let shi = try #require(full.proposal(forRecognizedText: "shì"))
+        #expect(shi.candidates.first?.hanzi == "是")
+        let da = try #require(full.proposal(forRecognizedText: "dà"))
+        #expect(da.candidates.first?.hanzi == "大")
+        #expect((Lexicon.shared?.rows(forHanzi: "学习").first?.frequency ?? 0) > 1000)
+    }
 }
 

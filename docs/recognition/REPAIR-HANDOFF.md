@@ -47,7 +47,7 @@ Supersedes the "Next repair assignment" in `HANDOFF.md`. Design: `repair-flow.md
 
 ## Limits that remain
 
-- No AI. The 8 curated entries come first, then an offline dictionary (below). The dictionary is CC-CEDICT with no frequency ranking, HSK levels or example sentences.
+- No AI. The 8 curated entries come first, then an offline dictionary (below). The dictionary is CC-CEDICT plus a word-frequency column (jieba, MIT); it has no HSK levels or example sentences.
 - Proper nouns and loanwords fail the English spell check and become `unresolved` (safe; the student edits).
 - One page and one ink sample were verified on the iPad. Handwriting accuracy in general is unproven.
 - The "no suggestion" message is small and at the top-right; making it more visible is a UI change not made here.
@@ -65,3 +65,4 @@ Supersedes the "Next repair assignment" in `HANDOFF.md`. Design: `repair-flow.md
 - **Debug**: `DebugTrace` writes `Documents/trace.log` in DEBUG builds; pull it with `devicectl device copy from --domain-type appDataContainer`.
 - **Signing**: free-account profiles last 7 days. Reinstall needs Xcode signed in and the profile trusted on the iPad.
 - **Pinyin with no Hanzi**: `Lexicon.repairCandidates(forPinyinReadings:)` finds the dictionary word closest to the readers' guesses (at least 4 letters; within 1 letter, 2 for long words; shares the first or last letter; its tones agree with the tone marks written; names and variants skipped). Only runs on Pinyin-shaped readings with at least one tone mark. Offered as a note only: Replace needs a confirmed Hanzi. Verified on the iPad for garbled `xuéxí` and `diàn nǎo`.
+- **Word frequency**: the fourth column of the bundled table (jieba word list, MIT; `NOTICE.md`; 90,877 of 125,322 entries have one) ranks words that are spelled the same, so `shì` offers 是 before 事 and `dà` offers 大 before 汏. Rebuild the table with `scripts/build-lexicon.py cedict_ts.u8 jieba_dict.txt`. Frequency comes from a general corpus, so it is a tiebreaker, not a meaning ranking; it is not tuned to the student's course.

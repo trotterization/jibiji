@@ -14,6 +14,8 @@ final class Lexicon: @unchecked Sendable {
         var isProperName: Bool
         /// A variant, old form or regional reading of another entry. Never offered from Pinyin alone.
         var isVariant: Bool
+        /// How often the word occurs in a large corpus (jieba word list, MIT). 0 when the list does not have it.
+        var frequency: Int = 0
 
         /// Toneless letters, joined: `haoxiang`.
         var letters: String { Lexicon.letters(of: numbered) }
@@ -69,12 +71,13 @@ final class Lexicon: @unchecked Sendable {
         var rows: [Row] = []
         rows.reserveCapacity(130_000)
         for line in tsv.split(separator: "\n", omittingEmptySubsequences: true) {
-            let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-            guard fields.count == 3, Lexicon.isPinyin(fields[1]) else { continue }
+            let fields = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
+            guard fields.count >= 3, Lexicon.isPinyin(fields[1]) else { continue }
             let glosses = fields[2].components(separatedBy: " | ")
             let proper = fields[1].first?.isUppercase == true
             let variant = glosses.contains { Lexicon.isVariantGloss($0) } && glosses.count <= 2
-            rows.append(Row(hanzi: String(fields[0]), numbered: String(fields[1]), glosses: glosses, isProperName: proper, isVariant: variant))
+            rows.append(Row(hanzi: String(fields[0]), numbered: String(fields[1]), glosses: glosses, isProperName: proper, isVariant: variant,
+                            frequency: fields.count > 3 ? Int(fields[3]) ?? 0 : 0))
         }
         self.init(rows: rows)
     }
@@ -172,6 +175,7 @@ final class Lexicon: @unchecked Sendable {
         }
         let sorted = best.values.sorted {
             if $0.score != $1.score { return $0.score < $1.score }
+            if $0.row.frequency != $1.row.frequency { return $0.row.frequency > $1.row.frequency }
             if $0.row.hanzi.count != $1.row.hanzi.count { return $0.row.hanzi.count < $1.row.hanzi.count }
             return $0.index < $1.index
         }
@@ -225,6 +229,7 @@ final class Lexicon: @unchecked Sendable {
         var seenHanzi = Set<String>()
         return best.filter { $0.value.score == top }.sorted { a, b in
             let ra = rows[a.key], rb = rows[b.key]
+            if ra.frequency != rb.frequency { return ra.frequency > rb.frequency }
             if ra.hanzi.count != rb.hanzi.count { return ra.hanzi.count < rb.hanzi.count }
             return a.key < b.key
         }.compactMap { seenHanzi.insert(rows[$0.key].hanzi).inserted ? rows[$0.key] : nil }.prefix(5).map { $0 }
@@ -301,6 +306,8 @@ final class Lexicon: @unchecked Sendable {
                 let lb = b.element.letters.count <= explained ? b.element.letters.count : 0
                 if la != lb { return la > lb }
             }
+            // A common word before a rare one that is spelled the same (是 before 氏).
+            if a.element.frequency != b.element.frequency { return a.element.frequency > b.element.frequency }
             if a.element.hanzi.count != b.element.hanzi.count { return a.element.hanzi.count < b.element.hanzi.count }
             return a.offset < b.offset
         }.map(\.element)
