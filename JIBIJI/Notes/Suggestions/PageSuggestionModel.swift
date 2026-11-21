@@ -539,7 +539,9 @@ final class PageSuggestionModel {
             DebugTrace.log("pending=\(pending.count) unreadable=\(unreadable.count) unmatched=\(unmatched.count)")
             #endif
             if pending.isEmpty, !unreadable.isEmpty {
-                status = .message(unreadable.joined(separator: " "))
+                // Several notes often share one reason; say each once.
+                var seen = Set<String>()
+                status = .message(unreadable.filter { seen.insert($0).inserted }.joined(separator: " "))
             } else if pending.isEmpty, !unmatched.isEmpty {
                 status = .message(Self.noMatchMessage(unmatched))
             } else {
