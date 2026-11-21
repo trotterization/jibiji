@@ -185,7 +185,14 @@ final class Lexicon: @unchecked Sendable {
         let unique = rows.filter { seen.insert($0.hanzi + "|" + $0.numbered).inserted }
         let good = unique.filter(agrees)
         let pool = good.isEmpty ? unique : good
+        let explained = Set(written.map(\.folded)).isEmpty ? 0 : written.map(\.folded).joined().count
         return pool.enumerated().sorted { a, b in
+            // With Pinyin written, the word whose spelling accounts for more of it comes first (学习 xuexi over 学 xue).
+            if explained > 0 {
+                let la = a.element.letters.count <= explained ? a.element.letters.count : 0
+                let lb = b.element.letters.count <= explained ? b.element.letters.count : 0
+                if la != lb { return la > lb }
+            }
             if a.element.hanzi.count != b.element.hanzi.count { return a.element.hanzi.count < b.element.hanzi.count }
             return a.offset < b.offset
         }.map(\.element)

@@ -143,7 +143,11 @@ enum FieldResolver {
                     note("Pinyin reading rejected: “\(p.joined(separator: " "))” (\(reading.source))")
                 }
             }
-            if let e = parsed.english {
+            if let e = parsed.english, entry.english == nil, reading.scope != .cell {
+                // No stroke of this note was filed as English, so English found only in a whole-note or whole-field reading is
+                // a recognizer's misreading of other ink (`学die xi` for `学 xúe xí`), not something the student wrote.
+                note("English reading ignored (no English ink in this note): “\(e)” (\(reading.source))")
+            } else if let e = parsed.english {
                 // OCR garbles Pinyin without leaving a tone mark (`hho xiang` for `hǎo xiang`). When a Pinyin reading of the
                 // same note is a few letters away, this "English" is that Pinyin, filed in the wrong field. It is not English.
                 // A reading that is real English stays English (`he` beside `tā`). Only one that is NOT English and sits

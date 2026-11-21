@@ -10,7 +10,7 @@ Supersedes the "Next repair assignment" in `HANDOFF.md`. Design: `repair-flow.md
 | Draft PR | https://github.com/trotterization/jibiji/pull/28 (base: PR #25's branch; nothing merged) |
 | Commit | see the PR head. The installed Debug build stamp shows the short SHA. |
 | Independent review | Fresh read-only reviewer found: short real English wrongly rejected as misfiled Pinyin; unresolved English could still yield a dictionary-gloss card; text-accepted older notes could stop matching; loose gloss-substring matching. All fixed with tests. Remaining, not fixed: proper nouns/abbreviations/accented loanwords fail the English spell check and become `unresolved` (safe, user edits); the spell check runs through the main thread (cached; no deadlock seen); simulator-only `isEnglish` tests depend on the device spell-check dictionary. |
-| Tests | 260 passing in the Simulator (1 known Simulator-only issue). Injected readers; not handwriting accuracy. |
+| Tests | Last full Simulator run: 260 passing (1 known Simulator-only issue), before the dictionary. Since then the Simulator test launch hung on this Mac, so the dictionary and repair tests (`LexiconTests`) compile (`build-for-testing`) and their logic was checked with a Mac harness against real iPad readings, but they were not run in the Simulator. Re-run the full suite before merging. |
 | Installed | Signed Debug build installed over the existing app via devicectl; data untouched. Free-account profiles expire after 7 days: reinstall needs Xcode signed in and the profile trusted on the iPad. |
 | Not included | PR #26 stage-4 records (unvalidated; not merged, not deployed) |
 | Build stamp | Debug: bottom-right of the Home screen and the top of "Check recognition" show `build <git short SHA>` plus flags |
@@ -47,7 +47,20 @@ Supersedes the "Next repair assignment" in `HANDOFF.md`. Design: `repair-flow.md
 
 ## Limits that remain
 
-- No dictionary or AI: only the 8-entry starter vocabulary proposes completions.
+- No AI. The 8 curated entries come first, then an offline dictionary (below). The dictionary is CC-CEDICT with no frequency ranking, HSK levels or example sentences.
 - Proper nouns and loanwords fail the English spell check and become `unresolved` (safe; the student edits).
 - One page and one ink sample were verified on the iPad. Handwriting accuracy in general is unproven.
 - The "no suggestion" message is small and at the top-right; making it more visible is a UI change not made here.
+
+## Dictionary and repair (added after the first iPad pass)
+
+- **CC-CEDICT** (CC BY-SA 4.0; `NOTICE.md`) is bundled as `JIBIJI/Lexicon/CEDICT.tsv` (125k entries, 8.3 MB; built by `scripts/build-lexicon.py`). `Lexicon` loads it once in the background at launch and is consulted only by the app (`NotePageModel` passes `StarterVocabulary.full`); tests that inject a reader keep the 8-entry list. Single toneless syllables (`he`, `me`), proper names and variant entries are never looked up from Pinyin alone.
+- **Row-context reading** (`NoteReading.lines`): each multi-cell row is read as one line first; if its words line up with the cells, each cell takes its word. Reason: `xué` read alone as a tiny crop came back `xJe`; inside its row it reads far better.
+- **Larger Paddle model** (`PinyinRecognition.onnx`, the first result of "Run Pinyin OCR by line") is a separate engine (`PaddleServer`) beside the mobile model. DEBUG builds only, like the mobile model.
+- **Dictionary repair** (`StarterVocabulary.repairedProposal`): when Hanzi is written and the Pinyin cannot be read as spelled, dictionary words that begin with that Hanzi are ranked by closeness to every reader guess (lower-ranked ones included, as scores only, never as text). Flagged uncertain. Replace is allowed only when the Hanzi is solid; Restore brings the ink back.
+- **Tone slip**: when every reader agrees on the Pinyin and only its tone marks differ from the dictionary's, Replace writes the dictionary's Pinyin.
+- **English leak fixed**: English from a whole-note reading is ignored when the note has no English ink (`学die xi`).
+- **UI**: alternatives show Pinyin and meaning; the status message wraps and says each reason once.
+- **Verified on the iPad** (`学 xué xí`, `diàn nǎo`, `好`, `好 hǎo xiang`): suggestion appears, Replace and Restore work. **Not verified**: general handwriting accuracy, force-quit reopen, undo and export after these changes, release builds (the Paddle models are DEBUG-only).
+- **Debug**: `DebugTrace` writes `Documents/trace.log` in DEBUG builds; pull it with `devicectl device copy from --domain-type appDataContainer`.
+- **Signing**: free-account profiles last 7 days. Reinstall needs Xcode signed in and the profile trusted on the iPad.

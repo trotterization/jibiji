@@ -81,4 +81,41 @@ import Testing
     @Test func theStarterVocabularyAloneStillAbstainsOnUnknownWords() {
         #expect(StarterVocabulary.standard.proposal(forRecognizedText: "电脑") == nil)
     }
+
+    // MARK: - Repair of misread Pinyin (readings captured on the iPad for `学 xué xí`)
+
+    private let deviceGuesses = ["eve xí", "xú xí", "xúc xi", "xúe xi", "xúc xí", "xúe xí", "xúu xi", "xú ×í", "xúu xí"]
+
+    @Test func misreadPinyinIsRepairedFromTheDictionary() throws {
+        let proposal = try #require(full.repairedProposal(forRecognizedText: "学 xú xí", latinEvidence: deviceGuesses))
+        #expect(proposal.candidates.first?.hanzi == "学习")
+        #expect(proposal.candidates.first?.pinyin == "xuéxí")
+        #expect(proposal.pinyinFromDictionary)
+        #expect(proposal.pinyinState.isUncertain)
+    }
+
+    @Test func repairNeedsOneHanziRunAndCloseEvidence() {
+        #expect(full.repairedProposal(forRecognizedText: "学 xú xí", latinEvidence: []) == nil)
+        #expect(full.repairedProposal(forRecognizedText: "学 xú xí", latinEvidence: ["zzz qqq", "he"]) == nil)
+        #expect(full.repairedProposal(forRecognizedText: "学 电脑 xú", latinEvidence: deviceGuesses) == nil)
+        #expect(full.repairedProposal(forRecognizedText: "xú xí", latinEvidence: deviceGuesses) == nil)
+    }
+
+    @Test func aWordThatExplainsMoreOfTheWrittenPinyinRanksFirst() throws {
+        let proposal = try #require(full.proposal(forRecognizedText: "学 xúe xí"))
+        #expect(proposal.candidates.first?.hanzi == "学习")
+        // The accent sits on the wrong letter: flagged as a tone-mark difference, not silently accepted.
+        #expect(proposal.pinyinState == .wrongTones(written: "xúe xí"))
+        // A bare Hanzi still looks up only itself.
+        #expect(full.proposal(forRecognizedText: "学")?.candidates.first?.hanzi == "学")
+    }
+
+    @Test func repairIsAlsoOfferedAsANoteWithTheDictionaryPinyin() throws {
+        let proposal = try #require(full.repairedProposal(forRecognizedText: "学 xú xí", latinEvidence: deviceGuesses))
+        let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "学 xú xí", proposal: proposal)
+        #expect(item.annotationText.contains("(xuéxí)"))
+        #expect(item.allowsInkReplacement)
+        #expect(item.cleanText == "学习 · xuéxí · to learn; to study")
+    }
 }
+

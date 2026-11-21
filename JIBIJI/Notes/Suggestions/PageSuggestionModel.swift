@@ -211,7 +211,7 @@ struct PendingSuggestion: Identifiable, Equatable {
 
     var replacementText: String {
         guard !candidate.pinyin.isEmpty || !candidate.gloss.isEmpty else { return candidate.hanzi }
-        let pinyin = selectedIndex == 0 ? proposal.writtenPinyin ?? candidate.pinyin : candidate.pinyin
+        let pinyin = selectedIndex == 0 && !proposal.correctsConfirmedPinyin ? proposal.writtenPinyin ?? candidate.pinyin : candidate.pinyin
         let gloss = selectedIndex == 0 ? proposal.writtenGloss ?? candidate.gloss : candidate.gloss
         return [candidate.hanzi, pinyin, gloss].filter { !$0.isEmpty }.joined(separator: " · ")
     }
@@ -226,6 +226,8 @@ struct PendingSuggestion: Identifiable, Equatable {
         switch proposal.pinyinState {
         case .wrongTones(let written):
             return "Tone marks differ from “\(candidate.pinyin)” (you wrote “\(written)”). Check before accepting."
+        case .possibleSpelling(let written) where proposal.pinyinFromDictionary:
+            return "Your Pinyin “\(written)” couldn't be read reliably. The dictionary word that fits it and your Hanzi is “\(candidate.hanzi)” (\(candidate.pinyin)). Check it. Your ink is unchanged."
         case .possibleSpelling(let written):
             return "Unsure: “\(written)” is close to “\(candidate.pinyin)”. It may be a spelling slip or a misread. Your ink is unchanged."
         default: return nil
@@ -235,7 +237,7 @@ struct PendingSuggestion: Identifiable, Equatable {
     /// Replacing ink is offered only when the reading is solid. A tone or spelling mismatch could be the
     /// recognizer's mistake, so those stay notes beside the ink.
     var allowsInkReplacement: Bool {
-        !inkEditSuppressed && !proposal.pinyinState.isUncertain
+        !inkEditSuppressed && (!proposal.pinyinState.isUncertain || proposal.pinyinFromDictionary || proposal.correctsConfirmedPinyin)
     }
 
     /// The note to add beside the ink: Hanzi unless already written, then the gloss unless already written.
@@ -258,7 +260,7 @@ struct PendingSuggestion: Identifiable, Equatable {
         // note is separate from the student's own writing, which is never changed. (Partial Hanzi keeps the
         // earlier behavior: only the missing character and English.)
         let toneConflict: Bool = { if case .wrongTones = proposal.pinyinState { return true } else { return false } }()
-        if proposal.hanziPrefixWritten.isEmpty || toneConflict, !candidate.pinyin.isEmpty, proposal.pinyinState != .correct {
+        if proposal.hanziPrefixWritten.isEmpty || toneConflict || proposal.pinyinFromDictionary, !candidate.pinyin.isEmpty, proposal.pinyinState != .correct {
             parts.append("(\(candidate.pinyin))")
         }
         if !proposal.glossAlreadyWritten { parts.append(candidate.gloss) }
@@ -497,15 +499,23 @@ final class PageSuggestionModel {
                 return ids.indices.contains { replacement.replacementStrokeIDs.contains(ids[$0]) && !drawing.strokes[$0].renderBounds.isEmpty }
             }
             pending = lines.compactMap { line in
-                let proposal: SuggestionProposal
+                var proposal: SuggestionProposal
                 var seen = Set<String>()
                 // Only a vocabulary entry proposes a completion, from the note's validated text. Raw OCR readings are
                 // never offered as words, alternatives or replacement text; they stay in `line.resolved.diagnostics`.
-                if let known = vocabulary.proposal(forRecognizedText: line.text) {
-                    proposal = known
-                } else if let repaired = vocabulary.repairedProposal(forRecognizedText: line.text, latinEvidence: line.resolved?.latinEvidence ?? []) {
-                    // Hanzi is written and the readers' Pinyin guesses are close to a dictionary word that begins with it.
+                let known = vocabulary.proposal(forRecognizedText: line.text)
+                // Pinyin was written (so the note is more than bare Hanzi) but the match above did not use it: the Hanzi
+                // alone matched. The readers' Pinyin guesses may be close to a longer dictionary word that begins with the Hanzi.
+                let pinyinWritten = line.resolved.map { $0.pinyin.status != .absent } ?? false
+                let repaired = (known == nil || (pinyinWritten && known?.pinyinAlreadyWritten == false))
+                    ? vocabulary.repairedProposal(forRecognizedText: line.text, latinEvidence: line.resolved?.latinEvidence ?? []) : nil
+                #if DEBUG
+                DebugTrace.log("decide text=“\(line.text)” source=“\(line.sourceText ?? "-")” pinyinStatus=\(line.resolved?.pinyin.status.rawValue ?? "nil") evidence=\(line.resolved?.latinEvidence.count ?? -1) known=\(known?.candidates.map { $0.hanzi + " " + $0.pinyin } ?? []) knownPinyinWritten=\(known?.pinyinAlreadyWritten ?? false) repaired=\(repaired?.candidates.map { $0.hanzi + " " + $0.pinyin } ?? [])")
+                #endif
+                if let repaired {
                     proposal = repaired
+                } else if let known {
+                    proposal = known
                 } else {
                     // Say what could not be settled rather than guess or stay silent.
                     if let doubt = line.resolved?.reviewNote { unreadable.append(doubt) }
@@ -530,6 +540,19 @@ final class PageSuggestionModel {
                 // Two recognizers read the Latin part differently: it may be a misread, not the student's slip.
                 var readingNote = line.reviewNote
                 var suppressInk = line.inkEditSuppressed
+                // A dictionary-repaired suggestion previews the exact text it would write, and Restore brings the ink back,
+                // so it may replace when the Hanzi is solid. The caveat names what was repaired; the readers' own doubt is
+                // already in it, so it is not shown twice.
+                if proposal.pinyinFromDictionary, line.resolved?.hanzi.isSolid == true {
+                    suppressInk = false
+                    readingNote = nil
+                }
+                // The readers agree on the Pinyin as written and only its tone marks differ from the dictionary's.
+                if case .wrongTones = proposal.pinyinState, line.resolved?.pinyin.status == .confirmed,
+                   line.resolved?.hanzi.isSolid == true {
+                    proposal.correctsConfirmedPinyin = true
+                    suppressInk = false
+                }
                 if readingNote == nil, let source = line.sourceText,
                    StarterVocabulary.latinTokenPairs(source).map(\.raw) != StarterVocabulary.latinTokenPairs(line.text).map(\.raw) {
                     readingNote = "Two readings of this ink disagree on the Pinyin, so it is uncertain. Check it. Your ink is unchanged."
@@ -543,6 +566,9 @@ final class PageSuggestionModel {
             // Only when nothing else was offered, so it never sits beside working suggestions looking like a failure.
             #if DEBUG
             DebugTrace.log("pending=\(pending.count) unreadable=\(unreadable.count) unmatched=\(unmatched.count)")
+            for item in pending {
+                DebugTrace.log("chip: note=“\(item.annotationText)” replace=“\(item.cleanText)” candidates=\(item.proposal.candidates.map { $0.hanzi + " " + $0.pinyin }) caveat=\(item.uncertaintyNote ?? "none")")
+            }
             #endif
             if pending.isEmpty, !unreadable.isEmpty {
                 // Several notes often share one reason; say each once.

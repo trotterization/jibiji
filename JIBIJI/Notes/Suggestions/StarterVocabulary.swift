@@ -22,6 +22,11 @@ struct SuggestionProposal: Equatable, Sendable {
     /// How the student's written Pinyin compares with the word's Pinyin. Judged only against Hanzi that is
     /// actually written, since handwriting recognition alone can't tell a misspelling from a misread.
     var pinyinState: PinyinState = .notWritten
+    /// The Pinyin offered is the dictionary's, because the written Pinyin could not be read as spelled.
+    var pinyinFromDictionary = false
+    /// Every reader agreed on the Pinyin as written and only its tone marks differ from the dictionary's: a slip in the
+    /// writing, not a misread. Replacing writes the dictionary's Pinyin.
+    var correctsConfirmedPinyin = false
     var pinyinAlreadyWritten: Bool { pinyinState != .notWritten }
     /// Exact written fields, retained when replacing the whole source line.
     var writtenPinyin: String? = nil
@@ -188,7 +193,8 @@ struct StarterVocabulary: Sendable {
             hanziAlreadyWritten: best.hanzi == run,
             glossAlreadyWritten: false,
             hanziPrefixWritten: best.hanzi == run ? "" : run,
-            pinyinState: .possibleSpelling(written: writtenPinyin.isEmpty ? (latinEvidence.first ?? "") : writtenPinyin)
+            pinyinState: .possibleSpelling(written: writtenPinyin.isEmpty ? (latinEvidence.first ?? "") : writtenPinyin),
+            pinyinFromDictionary: true
         )
     }
 
