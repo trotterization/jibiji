@@ -117,5 +117,24 @@ import Testing
         #expect(item.allowsInkReplacement)
         #expect(item.cleanText == "学习 · xuéxí · to learn; to study")
     }
+
+    // MARK: - Pinyin with no Hanzi
+
+    @Test func pinyinWithNoHanziIsRepairedAsANoteOnly() throws {
+        let proposal = try #require(full.repairedProposal(forRecognizedText: "xú xí", latinEvidence: deviceGuesses))
+        #expect(proposal.candidates.first?.hanzi == "学习")
+        #expect(proposal.pinyinFromDictionary)
+        #expect(!proposal.hanziAlreadyWritten)
+        let near = try #require(full.repairedProposal(forRecognizedText: "diàn nǎo", latinEvidence: ["diàn nǎo", "dian nao"]))
+        #expect(near.candidates.first?.hanzi == "电脑")
+    }
+
+    @Test func pinyinOnlyRepairNeedsCloseEvidenceAndAgreeingTones() {
+        #expect(full.repairedProposal(forRecognizedText: "zz", latinEvidence: ["zzzz qqq", "xxxx"]) == nil)
+        // Tone marks that disagree with the word rule it out: xué xí (2, 2) is not 血洗 xuèxǐ (4, 3).
+        let rows = Lexicon.shared?.repairCandidates(forPinyinReadings: ["xúe xí"]) ?? []
+        #expect(rows.first?.hanzi == "学习")
+        #expect(!rows.contains { $0.hanzi == "血洗" })
+    }
 }
 

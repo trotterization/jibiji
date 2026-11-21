@@ -34,18 +34,34 @@ final class Lexicon: @unchecked Sendable {
     private let byHanzi: [String: [Int]]
     private let byFirst: [Character: [Int]]
     private let byLetters: [String: [Int]]
+    private let byLength: [Int: [Int]]
+    /// Toneless letters of each row, and how many of each letter a–z it has, so a spelling search can skip most rows cheaply.
+    private let spelled: [[UInt8]]
+    private let histogram: [[UInt8]]
+    /// Names and variants, which a spelling-only search never offers. A flat array, so the search never copies a row to ask.
+    private let excluded: [Bool]
 
     var count: Int { rows.count }
 
     init(rows: [Row]) {
         self.rows = rows
-        var hanzi: [String: [Int]] = [:], first: [Character: [Int]] = [:], letters: [String: [Int]] = [:]
+        var hanzi: [String: [Int]] = [:], first: [Character: [Int]] = [:], letters: [String: [Int]] = [:], length: [Int: [Int]] = [:]
         for (index, row) in rows.enumerated() {
             hanzi[row.hanzi, default: []].append(index)
             if let c = row.hanzi.first { first[c, default: []].append(index) }
-            letters[row.letters, default: []].append(index)
+            let spelled = row.letters
+            letters[spelled, default: []].append(index)
+            length[spelled.count, default: []].append(index)
         }
-        byHanzi = hanzi; byFirst = first; byLetters = letters
+        byHanzi = hanzi; byFirst = first; byLetters = letters; byLength = length
+        var bytes: [[UInt8]] = [], counts: [[UInt8]] = []
+        bytes.reserveCapacity(rows.count); counts.reserveCapacity(rows.count)
+        for row in rows {
+            let b = Array(row.letters.utf8)
+            bytes.append(b); counts.append(Self.histogram(of: b))
+        }
+        spelled = bytes; histogram = counts
+        excluded = rows.map { $0.isProperName || $0.isVariant }
     }
 
     /// Parses the tab-separated table (`simplified \t numbered pinyin \t gloss | gloss`).
@@ -162,6 +178,98 @@ final class Lexicon: @unchecked Sendable {
         // Only words as close as the best one: a word one letter further off is a different word, not an alternative.
         guard let top = sorted.first?.score else { return [] }
         return sorted.filter { $0.score == top }.prefix(5).map(\.row)
+    }
+
+    /// Dictionary words whose spelling is close to what the recognizers produced for Pinyin written with no Hanzi.
+    ///
+    /// Stricter than the Hanzi repair because nothing anchors the word: at least four letters; within one letter of some
+    /// reading (two for long words); and the tone marks the student wrote must agree with the word's tones. Names and
+    /// variants are skipped. Best score first, and only words as good as the best are returned.
+    @_optimize(speed)
+    func repairCandidates(forPinyinReadings readings: [String]) -> [Row] {
+        var seen = Set<String>()
+        let usable = readings.compactMap { reading -> (letters: String, tones: [Int])? in
+            let letters = Self.foldedLetters(reading)
+            guard letters.count >= 4, seen.insert(letters + "|" + Self.writtenToneList(reading).map(String.init).joined()).inserted else { return nil }
+            return (letters, Self.writtenToneList(reading))
+        }.prefix(8)
+        guard !usable.isEmpty else { return [] }
+        var best: [Int: (score: Int, tone: Int)] = [:]
+        for reading in usable {
+            let allowed = reading.letters.count > 7 ? 2 : 1
+            let readingBytes = Array(reading.letters.utf8)
+            let readingCounts = Self.histogram(of: readingBytes)
+            for length in max(4, reading.letters.count - allowed)...(reading.letters.count + allowed) {
+                for index in byLength[length] ?? [] {
+                    if excluded[index] { continue }
+                    // A reading is rarely wrong at both ends at once, so a word must share the first or last letter with it.
+                    let candidate = spelled[index]
+                    guard candidate.first == readingBytes.first || candidate.last == readingBytes.last else { continue }
+                    // One edit changes the letter counts by at most two, so a larger difference cannot be within range.
+                    guard Self.histogramGap(readingCounts, histogram[index]) <= 2 * allowed else { continue }
+                    let distance = Self.boundedDistance(readingBytes, spelled[index], limit: allowed)
+                    guard distance <= allowed else { continue }
+                    var mismatches = 0
+                    let tones = rows[index].tones
+                    if tones.count == reading.tones.count {
+                        for (written, expected) in zip(reading.tones, tones) where written != 0 && written != expected { mismatches += 1 }
+                    }
+                    // A word whose tones disagree with the marks that were written is a different word.
+                    guard mismatches == 0 else { continue }
+                    if let existing = best[index], existing.score <= distance { continue }
+                    best[index] = (distance, mismatches)
+                }
+            }
+        }
+        guard let top = best.values.map(\.score).min() else { return [] }
+        var seenHanzi = Set<String>()
+        return best.filter { $0.value.score == top }.sorted { a, b in
+            let ra = rows[a.key], rb = rows[b.key]
+            if ra.hanzi.count != rb.hanzi.count { return ra.hanzi.count < rb.hanzi.count }
+            return a.key < b.key
+        }.compactMap { seenHanzi.insert(rows[$0.key].hanzi).inserted ? rows[$0.key] : nil }.prefix(5).map { $0 }
+    }
+
+    @_optimize(speed)
+    private static func histogram(of bytes: [UInt8]) -> [UInt8] {
+        var counts = [UInt8](repeating: 0, count: 26)
+        for b in bytes where b >= 97 && b <= 122 { counts[Int(b - 97)] &+= 1 }
+        return counts
+    }
+
+    @_optimize(speed)
+    private static func histogramGap(_ a: [UInt8], _ b: [UInt8]) -> Int {
+        var gap = 0
+        for i in 0..<26 { gap += abs(Int(a[i]) - Int(b[i])) }
+        return gap
+    }
+
+    /// Edit distance between two ASCII strings, or `limit + 1` as soon as it must exceed `limit`.
+    @_optimize(speed)
+    private static func boundedDistance(_ a: [UInt8], _ b: [UInt8], limit: Int) -> Int {
+        if abs(a.count - b.count) > limit { return limit + 1 }
+        var previous = Array(0...b.count)
+        var row = previous
+        for i in 1...max(a.count, 1) where !a.isEmpty {
+            row[0] = i
+            var smallest = row[0]
+            for j in 1...max(b.count, 1) where !b.isEmpty {
+                row[j] = min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+                smallest = min(smallest, row[j])
+            }
+            if smallest > limit { return limit + 1 }
+            swap(&previous, &row)
+        }
+        return b.isEmpty ? a.count : previous[b.count]
+    }
+
+    /// One tone per written word (the first tone mark in it), 0 where a word has none.
+    static func writtenToneList(_ reading: String) -> [Int] {
+        let marks: [UInt32: Int] = [0x0304: 1, 0x0301: 2, 0x030C: 3, 0x0300: 4]
+        return reading.split(whereSeparator: \.isWhitespace).map { word in
+            for scalar in String(word).decomposedStringWithCanonicalMapping.unicodeScalars { if let t = marks[scalar.value] { return t } }
+            return 0
+        }
     }
 
     /// Lowercase ASCII letters only, with look-alike marks recognizers produce folded in (`×`→x, `√`→v, v→u, ü→u).

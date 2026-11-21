@@ -182,6 +182,19 @@ struct StarterVocabulary: Sendable {
     func repairedProposal(forRecognizedText text: String, latinEvidence: [String]) -> SuggestionProposal? {
         guard let lexicon, !latinEvidence.isEmpty else { return nil }
         let runs = Self.hanziRuns(in: text)
+        if runs.isEmpty {
+            // Pinyin with no Hanzi written: the dictionary word is a guess from spelling and tones alone, offered only as a note.
+            let rows = lexicon.repairCandidates(forPinyinReadings: latinEvidence)
+            guard let best = rows.first else { return nil }
+            _ = best
+            return SuggestionProposal(
+                candidates: rows.map(\.entry.candidate),
+                hanziAlreadyWritten: false,
+                glossAlreadyWritten: false,
+                pinyinState: .possibleSpelling(written: text.split(whereSeparator: \.isWhitespace).joined(separator: " ")),
+                pinyinFromDictionary: true
+            )
+        }
         guard runs.count == 1, let run = runs.first else { return nil }
         let rows = lexicon.repairCandidates(hanziPrefix: run, readings: latinEvidence)
         guard let best = rows.first else { return nil }

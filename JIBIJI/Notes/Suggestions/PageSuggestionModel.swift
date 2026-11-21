@@ -507,8 +507,18 @@ final class PageSuggestionModel {
                 // Pinyin was written (so the note is more than bare Hanzi) but the match above did not use it: the Hanzi
                 // alone matched. The readers' Pinyin guesses may be close to a longer dictionary word that begins with the Hanzi.
                 let pinyinWritten = line.resolved.map { $0.pinyin.status != .absent } ?? false
+                // With no Hanzi, only readings that are shaped like Pinyin count, and at least one must carry a tone mark:
+                // an English word never reaches the dictionary as Pinyin.
+                var evidence = line.resolved?.latinEvidence ?? []
+                if StarterVocabulary.hanziRuns(in: line.text).isEmpty {
+                    evidence = evidence.filter { text in
+                        let words = FieldValidation.words(text)
+                        return !words.isEmpty && words.allSatisfy { FieldValidation.kind(of: $0) != .english }
+                    }
+                    if !evidence.contains(where: { $0 != $0.folding(options: .diacriticInsensitive, locale: nil) }) { evidence = [] }
+                }
                 let repaired = (known == nil || (pinyinWritten && known?.pinyinAlreadyWritten == false))
-                    ? vocabulary.repairedProposal(forRecognizedText: line.text, latinEvidence: line.resolved?.latinEvidence ?? []) : nil
+                    ? vocabulary.repairedProposal(forRecognizedText: line.text, latinEvidence: evidence) : nil
                 #if DEBUG
                 DebugTrace.log("decide text=“\(line.text)” source=“\(line.sourceText ?? "-")” pinyinStatus=\(line.resolved?.pinyin.status.rawValue ?? "nil") evidence=\(line.resolved?.latinEvidence.count ?? -1) known=\(known?.candidates.map { $0.hanzi + " " + $0.pinyin } ?? []) knownPinyinWritten=\(known?.pinyinAlreadyWritten ?? false) repaired=\(repaired?.candidates.map { $0.hanzi + " " + $0.pinyin } ?? [])")
                 #endif
@@ -543,7 +553,7 @@ final class PageSuggestionModel {
                 // A dictionary-repaired suggestion previews the exact text it would write, and Restore brings the ink back,
                 // so it may replace when the Hanzi is solid. The caveat names what was repaired; the readers' own doubt is
                 // already in it, so it is not shown twice.
-                if proposal.pinyinFromDictionary, line.resolved?.hanzi.isSolid == true {
+                if proposal.pinyinFromDictionary, line.resolved?.hanzi.status == .confirmed {
                     suppressInk = false
                     readingNote = nil
                 }
