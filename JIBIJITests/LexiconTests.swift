@@ -98,7 +98,8 @@ import Testing
         #expect(full.repairedProposal(forRecognizedText: "学 xú xí", latinEvidence: []) == nil)
         #expect(full.repairedProposal(forRecognizedText: "学 xú xí", latinEvidence: ["zzz qqq", "he"]) == nil)
         #expect(full.repairedProposal(forRecognizedText: "学 电脑 xú", latinEvidence: deviceGuesses) == nil)
-        #expect(full.repairedProposal(forRecognizedText: "xú xí", latinEvidence: deviceGuesses) == nil)
+        // With no Hanzi the repair is a note-only guess from spelling and tones; evidence that is nowhere near any word gives nothing.
+        #expect(full.repairedProposal(forRecognizedText: "qqq", latinEvidence: ["qqqq", "zzzz"]) == nil)
     }
 
     @Test func aWordThatExplainsMoreOfTheWrittenPinyinRanksFirst() throws {
