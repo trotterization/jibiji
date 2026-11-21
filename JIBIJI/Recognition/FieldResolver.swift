@@ -3,7 +3,7 @@ import Foundation
 /// Every reading of one note's ink, retained with where it came from. Raw evidence only: nothing here is shown
 /// to the student as text, and nothing here is validated yet.
 enum NoteEvidence {
-    enum Engine: String, Sendable { case pencilKit = "PencilKit", vision = "Vision", paddle = "Paddle", other = "reader" }
+    enum Engine: String, Sendable { case pencilKit = "PencilKit", vision = "Vision", paddle = "Paddle", paddleServer = "PaddleServer", other = "reader" }
     /// How much ink was read at once.
     enum Scope: String, Sendable {
         /// One layout cell. May be only part of a field (`hǎo` of `hǎo xiang`).
@@ -60,6 +60,9 @@ struct ResolvedNote: Equatable, Sendable {
     var english: ResolvedField
     /// Raw or rejected OCR readings, for the Debug view and the "check it" message. Never offered as text.
     var diagnostics: [String]
+    /// The Latin part of every whole-field and whole-note reading, including lower-ranked guesses and ones that are not
+    /// valid Pinyin. Never shown as text: the dictionary may use them only to rank words that begin with the written Hanzi.
+    var latinEvidence: [String] = []
 
     var fields: [(NoteGrouping.FieldKind, ResolvedField)] { [(.hanzi, hanzi), (.pinyin, pinyin), (.english, english)] }
 
@@ -177,7 +180,13 @@ enum FieldResolver {
         var englishField = pickEnglish(english, entry: entry, hanzi: finalHanzi.value, vocabulary: vocabulary, note: note)
         // If every English reading was really Pinyin, nothing English was written.
         if misfiled, english.isEmpty { englishField = .absent }
-        return ResolvedNote(hanzi: finalHanzi, pinyin: pinyinField, english: englishField, diagnostics: diagnostics)
+        var latinEvidence: [String] = []
+        for reading in evidence where reading.scope != .cell || reading.field == .pinyin {
+            let latin = String(reading.text.filter { !$0.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) } })
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if latin.contains(where: \.isLetter), !latinEvidence.contains(latin) { latinEvidence.append(latin) }
+        }
+        return ResolvedNote(hanzi: finalHanzi, pinyin: pinyinField, english: englishField, diagnostics: diagnostics, latinEvidence: latinEvidence)
     }
 
     /// Readings derived from other readings (the grouping's own joined text) do not corroborate anything.

@@ -33,13 +33,46 @@ enum NoteReading {
         readRegion: RegionReader? = nil,
         readCell: (_ strokes: [PKStroke], _ cell: NoteLayout.CellCandidate) async throws -> CellRead?
     ) async throws -> [RecognizedLine] {
-        let cells = mergedCells(NoteLayout.candidates(in: drawing))
+        let rows = NoteLayout.candidates(in: drawing)
+        let cells = mergedCells(rows)
+        // Short Pinyin is hard to read from a tiny crop of one syllable (`xué` alone) and easy to read inside its line.
+        // Read each multi-cell row as one line first; when its words line up with the row's cells, each cell gets the
+        // word read in context. The cell's own reading stays as evidence beside it.
+        var wordForCell: [[Int]: NoteEvidence.Reading] = [:]
+        if let readRegion {
+            for row in rows {
+                try Task.checkCancellation()
+                let rowCells = mergedCells([row])
+                guard rowCells.count >= 2 else { continue }
+                let readings = try await readRegion(row.strokeIndices.map { drawing.strokes[$0] })
+                let ordered = readings.filter { !$0.alternate }.sorted { Self.rowPriority($0.engine) < Self.rowPriority($1.engine) }
+                #if DEBUG
+                DebugTrace.log("row read cells=\(rowCells.count): " + ordered.map { "\($0.engine.rawValue)=\($0.text.replacingOccurrences(of: "\n", with: "|"))" }.joined(separator: " ; "))
+                #endif
+                for reading in ordered {
+                    let words = rowWords(in: reading.text)
+                    guard words.count == rowCells.count else { continue }
+                    for (cell, word) in zip(rowCells, words) { wordForCell[cell.strokeIndices] = .init(text: word, engine: reading.engine, scope: .cell) }
+                    break
+                }
+            }
+        }
         var reads: [[Int]: CellRead] = [:]
         var readings: [NoteGrouping.Reading] = []
         for cell in cells {
             try Task.checkCancellation()
             let strokes = cell.strokeIndices.map { drawing.strokes[$0] }
-            let read = try await readCell(strokes, cell)
+            var read = try await readCell(strokes, cell)
+            if let word = wordForCell[cell.strokeIndices], isUsableRowWord(word.text) {
+                var evidence = read?.evidence ?? []
+                if evidence.isEmpty, let own = read { evidence = [.init(text: own.text, engine: .other, scope: .cell)] }
+                #if DEBUG
+                DebugTrace.log("cell \(cell.strokeIndices.count) strokes: own=\(read?.text ?? "-") row-word=\(word.text)")
+                #endif
+                if read?.text != word.text {
+                    read = CellRead(text: word.text, sourceText: read?.text, readings: read.map { [$0.text] + $0.readings } ?? [], evidence: [word] + evidence)
+                }
+            }
             if let read, !read.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { reads[cell.strokeIndices] = read }
             readings.append(.init(cell: cell, text: read?.text))
         }
@@ -78,6 +111,36 @@ enum NoteReading {
             if let line = built { lines.append(line) }
         }
         return lines
+    }
+
+    /// Which engine's whole-row reading is tried first: the larger Paddle model, then the mobile one, then the rest.
+    private static func rowPriority(_ engine: NoteEvidence.Engine) -> Int {
+        switch engine { case .paddleServer: 0; case .paddle: 1; default: 2 }
+    }
+
+    /// Words of a row reading, split where the script changes: `好hǎo xiang` → `好`, `hǎo`, `xiang`.
+    static func rowWords(in text: String) -> [String] {
+        var words: [String] = []
+        var current = ""
+        var currentIsHan = false
+        for character in text {
+            if character.isWhitespace {
+                if !current.isEmpty { words.append(current); current = "" }
+                continue
+            }
+            let han = character.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) }
+            if !current.isEmpty, han != currentIsHan { words.append(current); current = "" }
+            current.append(character)
+            currentIsHan = han
+        }
+        if !current.isEmpty { words.append(current) }
+        return words
+    }
+
+    /// A word read in context is used for its cell only when it is Hanzi or spelled as Pinyin; anything else is left to
+    /// the cell's own reading.
+    static func isUsableRowWord(_ word: String) -> Bool {
+        FieldValidation.isHanzi(word) || PinyinValidator.analyze(word).isValid
     }
 
     /// The cell readings behind an entry, tagged by the field they are about (and whether they are only part of it).

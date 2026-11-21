@@ -159,6 +159,9 @@ extension PencilInkLineReader {
         print("EVIDENCE vision done, paddle next")
         // The model's plain best reading first (the one "Run Pinyin OCR by line" shows), then the beam-search guesses.
         // The beam's top string can differ from the plain reading; the guesses stay diagnostics.
+        // The larger Paddle model is a separate reader (the first result of "Run Pinyin OCR by line"); it reads short
+        // Pinyin better than the mobile model, so its answer counts as its own evidence.
+        add(await PinyinOCR.shared.recognize(ink).text.map { [$0] } ?? [], .paddleServer)
         let plain = await PinyinOCR.shared.recognizeMobile(ink).text.map { [$0] } ?? []
         add(plain + (await PinyinOCR.shared.readings(ink)), .paddle)
         #endif
@@ -168,7 +171,7 @@ extension PencilInkLineReader {
     /// The reading grouping uses to decide what kind of writing a cell holds. PencilKit, then Vision, then Paddle,
     /// except that a Latin reading with garbled tone marks yields to another reading that is valid Pinyin.
     static func primary(of evidence: [NoteEvidence.Reading]) -> String? {
-        let all = ["PencilKit", "Vision", "Paddle", "reader"].flatMap { name in evidence.filter { $0.engine.rawValue == name } }
+        let all = ["PencilKit", "Vision", "PaddleServer", "Paddle", "reader"].flatMap { name in evidence.filter { $0.engine.rawValue == name } }
         let ordered0 = all.filter { !$0.alternate }
         // Digit-and-letter soup (`n4O`) is noise from a recognizer reading ink it cannot read; prefer any well-formed reading.
         let usable = ordered0.filter { ReadingValidation.isWellFormed($0.text) }
@@ -500,6 +503,9 @@ final class PageSuggestionModel {
                 // never offered as words, alternatives or replacement text; they stay in `line.resolved.diagnostics`.
                 if let known = vocabulary.proposal(forRecognizedText: line.text) {
                     proposal = known
+                } else if let repaired = vocabulary.repairedProposal(forRecognizedText: line.text, latinEvidence: line.resolved?.latinEvidence ?? []) {
+                    // Hanzi is written and the readers' Pinyin guesses are close to a dictionary word that begins with it.
+                    proposal = repaired
                 } else {
                     // Say what could not be settled rather than guess or stay silent.
                     if let doubt = line.resolved?.reviewNote { unreadable.append(doubt) }

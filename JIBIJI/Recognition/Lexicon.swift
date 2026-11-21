@@ -136,6 +136,41 @@ final class Lexicon: @unchecked Sendable {
         return Array(Self.ranked(found, written: Array(pairs)).prefix(6))
     }
 
+    /// Dictionary words that begin with the written Hanzi and whose spelling is close to what the recognizers produced.
+    ///
+    /// Handwritten Pinyin is often read as scraps (`xú`, `xve`) with the right answer only among the lower-ranked guesses
+    /// (`xúe xi`). The readings are not text here; they only score words the dictionary already has. A word qualifies
+    /// when some reading is within one letter of its spelling (two for long words). Best score first.
+    func repairCandidates(hanziPrefix run: String, readings: [String]) -> [Row] {
+        let normalized = readings.map(Self.foldedLetters).filter { $0.count >= 3 }
+        guard !run.isEmpty, !normalized.isEmpty else { return [] }
+        var best: [String: (row: Row, score: Int, index: Int)] = [:]
+        for (index, row) in rows(withHanziPrefix: run).enumerated() where !row.isProperName && !row.isVariant {
+            let letters = row.letters
+            guard letters.count >= 3 else { continue }
+            let allowed = letters.count > 7 ? 2 : 1
+            let score = normalized.map { StarterVocabulary.editDistance($0, letters) }.min() ?? Int.max
+            guard score <= allowed else { continue }
+            if let existing = best[row.hanzi], existing.score <= score { continue }
+            best[row.hanzi] = (row, score, index)
+        }
+        let sorted = best.values.sorted {
+            if $0.score != $1.score { return $0.score < $1.score }
+            if $0.row.hanzi.count != $1.row.hanzi.count { return $0.row.hanzi.count < $1.row.hanzi.count }
+            return $0.index < $1.index
+        }
+        // Only words as close as the best one: a word one letter further off is a different word, not an alternative.
+        guard let top = sorted.first?.score else { return [] }
+        return sorted.filter { $0.score == top }.prefix(5).map(\.row)
+    }
+
+    /// Lowercase ASCII letters only, with look-alike marks recognizers produce folded in (`×`→x, `√`→v, v→u, ü→u).
+    static func foldedLetters(_ text: String) -> String {
+        let mapped = text.lowercased().replacingOccurrences(of: "×", with: "x").replacingOccurrences(of: "√", with: "v")
+        let flat = mapped.folding(options: .diacriticInsensitive, locale: nil)
+        return String(flat.filter { $0.isASCII && $0.isLetter }).replacingOccurrences(of: "v", with: "u")
+    }
+
     /// Entries whose tones agree with every tone mark the student wrote come first; then shorter words.
     private static func ranked(_ rows: [Row], written: [(raw: String, folded: String)]) -> [Row] {
         let marks = writtenTones(written)
