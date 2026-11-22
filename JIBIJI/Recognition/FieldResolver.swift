@@ -121,6 +121,19 @@ enum FieldResolver {
         var pinyinSeen = false
         var misfiled = false
         var pinyinLetters: [String] = []   // Pinyin-shaped readings of the whole note or of the Pinyin field, valid or not
+
+        // Plain syllables that are not an English word (`Shi`), read alike by two or more independent engines, are Pinyin.
+        // One engine's English look-alike a letter away (`She`) is then that Pinyin misread, not something else written.
+        // A real English word read alike by everyone (`she`) never takes part, so English notes stay English.
+        var syllableVoters: [String: Set<NoteEvidence.Engine>] = [:]
+        for reading in evidence where !reading.alternate && !reading.partial && reading.engine != .other {
+            let words = FieldValidation.words(latinPart(reading.text)).filter { $0.contains(where: \.isLetter) }
+            guard !words.isEmpty, words.allSatisfy({ [.pinyinPlain, .pinyinToned].contains(FieldValidation.kind(of: $0)) }),
+                  PinyinValidator.analyze(words: words).isValid,
+                  !FieldValidation.isEnglish(words.joined(separator: " "), hanzi: nil, vocabulary: vocabulary) else { continue }
+            syllableVoters[FieldValidation.letters(words), default: []].insert(reading.engine)
+        }
+        let voted = syllableVoters.filter { $0.value.count >= 2 }.max { $0.value.count < $1.value.count }
         for reading in evidence {
             if reading.alternate { note("Alternate reading: “\(reading.text)” (\(reading.engine.rawValue))"); continue }
             let parsed = parse(reading, vocabulary: vocabulary)
@@ -147,6 +160,19 @@ enum FieldResolver {
                 // No stroke of this note was filed as English, so English found only in a whole-note or whole-field reading is
                 // a recognizer's misreading of other ink (`学die xi` for `学 xúe xí`), not something the student wrote.
                 note("English reading ignored (no English ink in this note): “\(e)” (\(reading.source))")
+            } else if let e = parsed.english, let voted,
+                      case let letters = FieldValidation.letters(FieldValidation.words(e)),
+                      letters == voted.key || (!voted.value.contains(reading.engine) && StarterVocabulary.editDistance(letters, voted.key) <= 1) {
+                if letters == voted.key {
+                    // The same syllables the engines agreed on, filed as English only because nothing anchored them.
+                    pinyinSeen = true
+                    let words = FieldValidation.words(e)
+                    pinyin.append(Candidate(text: words.joined(separator: " "), source: reading.source,
+                                            toned: PinyinValidator.analyze(words: words).isToned, rank: rank(reading)))
+                } else {
+                    misfiled = true
+                    note("English reading outvoted as misread Pinyin: “\(e)” (\(reading.source))")
+                }
             } else if let e = parsed.english {
                 // OCR garbles Pinyin without leaving a tone mark (`hho xiang` for `hǎo xiang`). When a Pinyin reading of the
                 // same note is a few letters away, this "English" is that Pinyin, filed in the wrong field. It is not English.
@@ -168,7 +194,25 @@ enum FieldResolver {
         }
 
         let hanziField = pickHanzi(hanzi, entry: entry, vocabulary: vocabulary, note: note)
-        let pinyinField = pickPinyin(pinyin, entry: entry, hanzi: hanziField.value, pinyinSeen: pinyinSeen, vocabulary: vocabulary, note: note)
+        var pinyinField = pickPinyin(pinyin, entry: entry, hanzi: hanziField.value, pinyinSeen: pinyinSeen, vocabulary: vocabulary, note: note)
+        // The engines agreed on the letters but dropped the tone mark, which only their lower-ranked guesses kept (`Shi`, with
+        // `Shì` below it). When those guesses agree on a single toned spelling of exactly these letters, it is used, tentatively.
+        if let value = pinyinField.value, !PinyinValidator.analyze(words: FieldValidation.words(value)).isToned {
+            let letters = FieldValidation.letters(FieldValidation.words(value))
+            var toned: [String: String] = [:]
+            for reading in evidence where reading.alternate {
+                let words = FieldValidation.words(latinPart(reading.text)).filter { $0.contains(where: \.isLetter) }
+                let verdict = PinyinValidator.analyze(words: words)
+                guard !words.isEmpty, verdict.isValid, verdict.isToned, FieldValidation.letters(words) == letters else { continue }
+                let spelling = words.joined(separator: " ").precomposedStringWithCanonicalMapping.lowercased()
+                toned[spelling.replacingOccurrences(of: " ", with: ""), default: spelling] = toned[spelling.replacingOccurrences(of: " ", with: "")] ?? spelling
+            }
+            if toned.count == 1, let spelling = toned.values.first {
+                note("Tone mark taken from a lower-ranked reading: “\(spelling)”")
+                pinyinField = ResolvedField(value: spelling, status: .tentative,
+                                            note: "the tone mark came from a lower-ranked reading", sources: pinyinField.sources)
+            }
+        }
         // With Pinyin settled, the Hanzi that fits it is preferred over a conflicting reading.
         var finalHanzi = hanziField
         if hanzi.count > 1, let letters = pinyinField.value.map({ FieldValidation.letters(FieldValidation.words($0)) }) {
@@ -210,6 +254,11 @@ enum FieldResolver {
         var pinyin: [String]?
         var english: String?
         var rejected: [String] = []
+    }
+
+    /// The text of a reading with its Hanzi removed.
+    private static func latinPart(_ text: String) -> String {
+        String(text.filter { !$0.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) } })
     }
 
     private static func parse(_ reading: NoteEvidence.Reading, vocabulary: StarterVocabulary) -> Parsed {

@@ -223,4 +223,42 @@ struct RecognitionRepairTests {
         #expect(line.wasRead(as: "好 hňo"))
         #expect(!line.wasRead(as: "好 xyz"))
     }
+
+    // MARK: - One plain syllable: readings captured on the iPad for a handwritten `shì`
+
+    private func shiEntry(_ text: String) -> NoteGrouping.Entry {
+        NoteGrouping.Entry(english: .init(text: text, cellText: text, strokeIndices: [0], bounds: .init(x: 0, y: 0, width: 60, height: 40)),
+                           arrangement: .single, uncertainty: [])
+    }
+
+    private func reading(_ text: String, _ engine: NoteEvidence.Engine, _ scope: NoteEvidence.Scope, alternate: Bool = false) -> NoteEvidence.Reading {
+        .init(text: text, engine: engine, scope: scope, field: scope == .cell ? .english : nil, alternate: alternate)
+    }
+
+    @Test func twoReadersAgreeingOnASyllableOutvoteOneEnglishLookAlike() {
+        var readings: [NoteEvidence.Reading] = []
+        for scope in [NoteEvidence.Scope.cell, .entry] {
+            readings += [reading("She", .pencilKit, scope), reading("Shi", .paddleServer, scope), reading("Shi", .paddle, scope)]
+            readings += ["Shì", "S hi", "S hì", "shi"].map { reading($0, .paddle, scope, alternate: true) }
+        }
+        let resolved = FieldResolver.resolve(entry: shiEntry("She"), readings: readings)
+        #expect(resolved.pinyin.value == "shì")
+        #expect(resolved.pinyin.status == .tentative)
+        #expect(resolved.english.status == .absent)
+        #expect(resolved.diagnostics.contains { $0.contains("outvoted") })
+    }
+
+    @Test func aRealEnglishWordReadAlikeStaysEnglish() {
+        let readings = [reading("she", .pencilKit, .cell), reading("she", .paddleServer, .cell), reading("she", .paddle, .cell)]
+        let resolved = FieldResolver.resolve(entry: shiEntry("she"), readings: readings)
+        #expect(resolved.english.value == "she")
+        #expect(resolved.pinyin.value == nil)
+    }
+
+    @Test func oneReaderAloneCannotOutvoteEnglish() {
+        let readings = [reading("She", .pencilKit, .cell), reading("Shi", .paddle, .cell)]
+        let resolved = FieldResolver.resolve(entry: shiEntry("She"), readings: readings)
+        #expect(resolved.english.value == "She")
+    }
 }
+
