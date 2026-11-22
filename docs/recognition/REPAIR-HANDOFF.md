@@ -10,7 +10,7 @@ Supersedes the "Next repair assignment" in `HANDOFF.md`. Design: `repair-flow.md
 | Draft PR | https://github.com/trotterization/jibiji/pull/28 (base: PR #25's branch; nothing merged) |
 | Commit | see the PR head. The installed Debug build stamp shows the short SHA. |
 | Independent review | Fresh read-only reviewer found: short real English wrongly rejected as misfiled Pinyin; unresolved English could still yield a dictionary-gloss card; text-accepted older notes could stop matching; loose gloss-substring matching. All fixed with tests. Remaining, not fixed: proper nouns/abbreviations/accented loanwords fail the English spell check and become `unresolved` (safe, user edits); the spell check (`UITextChecker`) now runs under a lock off the main thread, because a main-thread hop deadlocked on the iPad; it has worked on the device but UIKit does not document it as thread-safe; simulator-only `isEnglish` tests depend on the device spell-check dictionary. |
-| Tests | Full Simulator suite: 288 passed, 1 known Simulator-only issue (Chinese stroke recognition is not available in the Simulator). Injected readers and replayed device readings; not general handwriting accuracy. If the Simulator test launch hangs, shut the Simulator down and run `test-without-building`. |
+| Tests | Full Simulator suite: 289 passed, 1 known Simulator-only issue (Chinese stroke recognition is not available in the Simulator). Injected readers and replayed device readings; not general handwriting accuracy. If the Simulator test launch hangs, shut the Simulator down and run `test-without-building`. |
 | Installed | Signed Debug build installed over the existing app via devicectl; data untouched. Free-account profiles expire after 7 days: reinstall needs Xcode signed in and the profile trusted on the iPad. |
 | Not included | PR #26 stage-4 records (unvalidated; not merged, not deployed) |
 | Build stamp | Debug: bottom-right of the Home screen and the top of "Check recognition" show `build <git short SHA>` plus flags |
@@ -82,3 +82,4 @@ Fixed, with tests:
 10. `NOTICE.md` is bundled in the app. 11. The preview shows up to three lines. 12. The trace log restarts past 1 MB.
 
 Not changed: `UITextChecker` off the main thread (see State); the Pinyin-only repair costs about 0.3 s per line in Debug builds on the main thread (about 10 ms optimized).
+- **Replace size**: replacement text is written at the height of the handwriting it replaces and may extend to the right (up to 640 pt) instead of being shrunk into the short source word's box.

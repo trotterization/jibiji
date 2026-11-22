@@ -188,6 +188,17 @@ struct InkReplacementTests {
         #expect(!page.replaceSuggestion(item.id, with: "牛"))
         #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: original))
     }
+
+    @Test func aLongReplacementKeepsTheHeightOfTheHandwritingInsteadOfShrinking() throws {
+        // A short written word (`shì`) replaced by a whole line (`是 · shì · to be`).
+        let source = CGRect(x: 100, y: 200, width: 60, height: 40)
+        let ink = try #require(CleanHandwriting.drawing(text: "是 · shì · to be", in: source,
+                                                         pen: CleanHandwriting.Pen(), maxWidth: 640))
+        #expect(ink.bounds.height > source.height * 0.6, "not shrunk to fit the short word's width")
+        #expect(ink.bounds.width > source.width)
+        #expect(ink.bounds.maxX <= source.minX + 640 + 6)
+        #expect(abs(ink.bounds.minX - source.minX) < 8)
+    }
 }
 
 private struct ReplacementReader: InkLineReader {

@@ -130,8 +130,10 @@ final class NotePageModel {
         }
         let originals = indices.map { drawing.strokes[$0] }
         let sourceBounds = originals.dropFirst().reduce(originals[0].renderBounds) { $0.union($1.renderBounds) }
+        // Written at the height of the student's handwriting and allowed to run to the right (up to about a page width),
+        // so `是 · shì · to be` replacing a short `shì` is not shrunk into that word's box. − and + still resize it.
         guard let replacement = CleanHandwriting.drawing(text: cleanText, in: sourceBounds,
-                                                        pen: .matching(originals)) else {
+                                                        pen: .matching(originals), maxWidth: 640) else {
             notice = "This replacement couldn't be drawn. Your writing is unchanged."
             return false
         }
@@ -144,7 +146,7 @@ final class NotePageModel {
         var updated = drawing.strokes.enumerated().filter { !removed.contains($0.offset) }.map(\.element)
         updated.insert(contentsOf: replacement.strokes, at: min(indices[0], updated.count))
         drawingDidChange(PKDrawing(strokes: updated))
-        suggestions.keepUnchangedPending(remaining, excluding: sourceBounds)
+        suggestions.keepUnchangedPending(remaining, excluding: sourceBounds.union(replacement.bounds))
         saveIfNeeded()
         return true
     }
