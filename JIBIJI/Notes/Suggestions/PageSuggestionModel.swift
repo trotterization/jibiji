@@ -225,10 +225,10 @@ struct PendingSuggestion: Identifiable, Equatable {
 
     var replacementText: String {
         guard !candidate.pinyin.isEmpty || !candidate.gloss.isEmpty else { return candidate.hanzi }
-        // The student's Pinyin is kept as written, except that the right letters written without tone marks get the
-        // word's tone marks (`nong fu shi ji` → `nóngfū shìjí`): that adds what was missing and changes nothing written.
-        let keepsWritten = selectedIndex == 0 && !proposal.correctsConfirmedPinyin && proposal.pinyinState != .missingTones
-        let pinyin = keepsWritten ? proposal.writtenPinyin ?? candidate.pinyin : candidate.pinyin
+        // Replace writes the dictionary word, so its Pinyin is always the word's own tone-marked reading. Pinyin as the
+        // readers resolved it (`nong fo shi ji`: untoned, misspelled or misread) never reaches the page. Any difference
+        // from what was written is shown in the caveat, and Restore brings the student's ink back.
+        let pinyin = candidate.pinyin
         let gloss = selectedIndex == 0 ? proposal.writtenGloss ?? candidate.gloss : candidate.gloss
         return [candidate.hanzi, pinyin, gloss].filter { !$0.isEmpty }.joined(separator: " · ")
     }

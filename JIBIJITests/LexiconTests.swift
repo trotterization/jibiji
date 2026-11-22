@@ -253,10 +253,25 @@ import Testing
         #expect(proposal.pinyinState == .missingTones)
         let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "农夫市集 nong fu shi ji farmers market", proposal: proposal)
         #expect(item.cleanText == "农夫市集 · nóngfū shìjí · farmers market")
-        // Pinyin written with tone marks that differ is the student's: the preview keeps it as written.
-        let differing = try #require(full.proposal(forRecognizedText: "农夫市集 nòngfū shìjí farmers market"))
-        let kept = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "农夫市集 nòngfū shìjí farmers market", proposal: differing)
-        #expect(kept.cleanText.contains("nòngfū"))
+        // Any other Pinyin (wrong tones, misread letters) never reaches the Replace text: it writes the word's reading.
+        for written in ["nòngfū shìjí", "nong fo shi ji", "none fu she ji", "nóng fu shi ji"] {
+            let text = "农夫市集 \(written) farmers market"
+            guard let proposal = full.proposal(forRecognizedText: text) else { continue }
+            let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: text, proposal: proposal)
+            #expect(item.cleanText == "农夫市集 · nóngfū shìjí · farmers market", "\(written)")
+        }
+    }
+
+    @Test func replaceNeverWritesPinyinTheDictionaryDoesNotHave() throws {
+        // The iPad's Suggest for `农夫市集 nong fu shi ji farmers market`, whose Pinyin the readers resolved as `nong fo shi ji`.
+        var proposal = try #require(full.proposal(forRecognizedText: "农夫市集 nong fu shi ji farmers market"))
+        proposal.writtenPinyin = "nong fo shi ji"
+        proposal.pinyinState = .possibleSpelling(written: "nong fo shi ji")
+        for corrects in [false, true] {
+            proposal.correctsConfirmedPinyin = corrects
+            let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "农夫市集 nong fo shi ji farmers market", proposal: proposal)
+            #expect(item.replacementText == "农夫市集 · nóngfū shìjí · farmers market")
+        }
     }
 
     @Test func misreadPinyinAtTheStartOfALineIsFoundByTheHanzisReading() {
