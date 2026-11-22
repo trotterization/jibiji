@@ -112,7 +112,8 @@ struct RecognitionConsumerTests {
         page.drawingDidChange(ink)
         page.suggestions.request(for: ink); await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
-        #expect(item.replacementText == "好像 · hao xiang · to seem like; to look like")
+        // The right letters without tone marks gain the word's tones; nothing else written changes.
+        #expect(item.replacementText == "好像 · hǎoxiàng · to seem like; to look like")
         #expect(page.replaceSuggestion(item.id, with: "好像 · hao xiang · looks as if"))
         let reopened = NotePageModel(pageID: "page-1", store: store, lineReader: CrossCheckReader(lines: []))
         let note = try #require(reopened.latestVisibleReplacement)

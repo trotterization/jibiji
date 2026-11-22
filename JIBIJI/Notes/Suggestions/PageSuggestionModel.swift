@@ -225,7 +225,10 @@ struct PendingSuggestion: Identifiable, Equatable {
 
     var replacementText: String {
         guard !candidate.pinyin.isEmpty || !candidate.gloss.isEmpty else { return candidate.hanzi }
-        let pinyin = selectedIndex == 0 && !proposal.correctsConfirmedPinyin ? proposal.writtenPinyin ?? candidate.pinyin : candidate.pinyin
+        // The student's Pinyin is kept as written, except that the right letters written without tone marks get the
+        // word's tone marks (`nong fu shi ji` → `nóngfū shìjí`): that adds what was missing and changes nothing written.
+        let keepsWritten = selectedIndex == 0 && !proposal.correctsConfirmedPinyin && proposal.pinyinState != .missingTones
+        let pinyin = keepsWritten ? proposal.writtenPinyin ?? candidate.pinyin : candidate.pinyin
         let gloss = selectedIndex == 0 ? proposal.writtenGloss ?? candidate.gloss : candidate.gloss
         return [candidate.hanzi, pinyin, gloss].filter { !$0.isEmpty }.joined(separator: " · ")
     }

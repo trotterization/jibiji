@@ -159,6 +159,8 @@ final class PageFlashcards {
         let readable = PageSuggestionModel.readableInk(drawing, excluding: corrections)
         let digest = currentDigest!
         let token = generation
+        // Accepted notes already hold their Hanzi, Pinyin and English: their cards appear at once, before any reading.
+        let early = corrections.isEmpty ? 0 : merge(lines: [], digest: digest, corrections: corrections, drawing: readable)
         status = .reading
         let reader = reader
         let newTask = Task { [weak self] in
@@ -167,12 +169,12 @@ final class PageFlashcards {
             guard let self, !Task.isCancelled, self.generation == token else { return }
             switch result {
             case .success(let lines):
-                let added = self.merge(lines: lines, digest: digest, corrections: corrections, drawing: readable)
+                let added = early + self.merge(lines: lines, digest: digest, corrections: corrections, drawing: readable)
                 // Don't overwrite a save error from the merge.
                 if let loadError = self.loadError {
                     self.status = .message(loadError)
                 } else if !self.saveFailed {
-                    self.status = lines.isEmpty ? .message("No writing found on this page.")
+                    self.status = lines.isEmpty && corrections.isEmpty ? .message("No writing found on this page.")
                         : added == 0 && self.skippedNotes > 0 ? .message("An accepted note has no English meaning yet, so no card was made from it. Add one and try again.")
                         : added == 0 ? .message("No new cards found.") : .idle
                 }
@@ -204,6 +206,7 @@ final class PageFlashcards {
         let needsStrokeMatch = drawing != nil && corrections.contains { $0.replacement == nil && !($0.sourceStrokeIDs ?? []).isEmpty }
         // Stroke identities are content hashes: compute them once for the page, not per line.
         let pageIDs = needsStrokeMatch ? drawing!.strokes.map(InkSelection.identity) : []
+        let pageIDSet = Set(pageIDs)
         let lineStrokes = needsStrokeMatch
             ? lines.map { line in
                 line.strokeIndices.map { Set($0.filter(pageIDs.indices.contains).map { pageIDs[$0] }) }
@@ -227,14 +230,19 @@ final class PageFlashcards {
                 if !bySource.isEmpty { candidates = bySource }
             }
             let match = candidates.max { Self.overlap(note.anchor, lines[$0].bounds) < Self.overlap(note.anchor, lines[$1].bounds) }
-            guard let li = match else { continue }
-            guard let r = Self.resolve(note, line: lines[li], vocabulary: vocabulary) else {
-                skippedNotes += 1   // matched its ink but has no usable English: say so rather than drop it silently
+            // A note whose exact source strokes are all still on the page carries its own fields, so it makes its card
+            // even when this read of the ink spells the line differently (or before any read). A matched line is
+            // claimed, so the same ink does not also become a second card. A note whose ink is gone or changed does not.
+            let inkUnchanged = needsStrokeMatch && note.replacement == nil
+                && !(note.sourceStrokeIDs ?? []).isEmpty && Set(note.sourceStrokeIDs ?? []).isSubset(of: pageIDSet)
+            guard let line = match.map({ lines[$0] })
+                    ?? (inkUnchanged ? RecognizedLine(text: note.recognizedText, bounds: note.anchor) : nil) else { continue }
+            guard let r = Self.resolve(note, line: line, vocabulary: vocabulary) else {
+                skippedNotes += 1   // an accepted note with no usable English: say so rather than drop it silently
                 continue
             }
-            claimedLines.insert(li)
+            if let li = match { claimedLines.insert(li) }
             activeNotes.insert(note.id)
-            let line = lines[li]
             let back = r.pinyin.map { "\($0) — \(r.gloss)" } ?? r.gloss
             let slot = "\(line.rawText)\u{1F}\(r.hanzi)"
             let correction = CardCorrection(annotationID: note.id, slot: slot, signature: "\(r.hanzi)|\(r.pinyin ?? "")|\(r.gloss)")
@@ -253,6 +261,22 @@ final class PageFlashcards {
                 continue
             }
             usedCards.insert(cards[i].id)
+            if cards[i].status == .discarded, cards[i].correction?.annotationID != note.id {
+                // Accepting a note is an explicit request for its card, even if an identical card was discarded earlier.
+                cards[i].front = r.hanzi
+                cards[i].back = back
+                cards[i].kind = .vocabulary
+                cards[i].needsReview = false
+                cards[i].edited = false
+                cards[i].dedupeKey = key
+                cards[i].status = .draft
+                cards[i].inkDigest = digest
+                cards[i].sourceBounds = line.bounds
+                cards[i].sourceText = line.rawText
+                cards[i].correction = correction
+                added += 1
+                continue
+            }
             if cards[i].correction?.signature == correction.signature {
                 if cards[i].inkDigest != digest {
                     if cards[i].status == .approved { cards[i].status = .draft }

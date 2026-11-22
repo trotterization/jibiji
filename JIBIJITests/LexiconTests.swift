@@ -246,6 +246,18 @@ import Testing
         #expect(kept?.contains("diànnǎo") != true)
     }
 
+    @Test func theReplacePreviewAddsTonesToUntonedPinyin() throws {
+        // The iPad chip for `农夫市集 nong fu shi ji farmers market` showed `nong fu shi ji`; Keep added only the tones.
+        let proposal = try #require(full.proposal(forRecognizedText: "农夫市集 nong fu shi ji farmers market"))
+        #expect(proposal.pinyinState == .missingTones)
+        let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "农夫市集 nong fu shi ji farmers market", proposal: proposal)
+        #expect(item.cleanText == "农夫市集 · nóngfū shìjí · farmers market")
+        // Pinyin written with tone marks that differ is the student's: the preview keeps it as written.
+        let differing = try #require(full.proposal(forRecognizedText: "农夫市集 nòngfū shìjí farmers market"))
+        let kept = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "农夫市集 nòngfū shìjí farmers market", proposal: differing)
+        #expect(kept.cleanText.contains("nòngfū"))
+    }
+
     @Test func aKnownWordWithEnglishButNoPinyinStillShowsItsPinyin() throws {
         // The approved iPad card was `农夫市集 → farmers market`: the Pinyin had been split off the note.
         var line = RecognizedLine(text: "农夫市集 farmers market", bounds: .zero)
