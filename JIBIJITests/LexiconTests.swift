@@ -1,3 +1,4 @@
+import CoreGraphics
 import Testing
 @testable import JIBIJI
 
@@ -256,6 +257,55 @@ import Testing
         let differing = try #require(full.proposal(forRecognizedText: "农夫市集 nòngfū shìjí farmers market"))
         let kept = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "农夫市集 nòngfū shìjí farmers market", proposal: differing)
         #expect(kept.cleanText.contains("nòngfū"))
+    }
+
+    @Test func misreadPinyinAtTheStartOfALineIsFoundByTheHanzisReading() {
+        let words = ["none", "fu", "she", "ji", "farmers", "market"]
+        #expect(StarterVocabulary.leadingRun(of: words, near: "nongfushiji")?.count == 4)
+        #expect(StarterVocabulary.leadingRun(of: ["farmers", "market"], near: "nongfushiji") == nil)
+        // Short readings never match this way: `to` is not 他 `ta`.
+        #expect(StarterVocabulary.leadingRun(of: ["to", "be"], near: "ta") == nil)
+    }
+
+    @Test func hanziWrittenALittleApartIsOneWord() {
+        func cell(_ x: CGFloat, _ width: CGFloat, _ height: CGFloat, _ strokes: [Int]) -> NoteLayout.CellCandidate {
+            NoteLayout.CellCandidate(strokeIndices: strokes, bounds: CGRect(x: x, y: 100, width: width, height: height),
+                                     column: 0, scale: height, gapBefore: nil)
+        }
+        let entries = NoteGrouping.entries(from: [
+            .init(cell: cell(120, 245, 90, [0, 1, 2]), text: "农夫市"),
+            .init(cell: cell(381, 61, 80, [3]), text: "集"),
+            .init(cell: cell(509, 800, 60, [4, 5]), text: "nong fu shi ji farmers market"),
+        ])
+        #expect(entries.count == 1)
+        #expect(entries.first?.hanzi?.text == "农夫市集")
+        #expect(entries.first?.pinyin?.text == "nong fu shi ji")
+        #expect(entries.first?.english?.text == "farmers market")
+        // Two words a clear space apart stay two notes.
+        let apart = NoteGrouping.entries(from: [
+            .init(cell: cell(100, 160, 80, [0]), text: "你好"),
+            .init(cell: cell(400, 160, 80, [1]), text: "谢谢"),
+        ])
+        #expect(apart.count == 2)
+    }
+
+    @Test func aCardUsesTheDictionaryReadingWhenThePinyinWasMisread() throws {
+        var line = RecognizedLine(text: "农夫市集 nong fo shi ji farmers market", bounds: .zero)
+        line.resolved = ResolvedNote(
+            hanzi: .init(value: "农夫市集", status: .confirmed), pinyin: .init(value: "nong fo shi ji", status: .tentative),
+            english: .init(value: "farmers market", status: .confirmed), diagnostics: [])
+        let draft = try #require(FlashcardExtractor.extract(from: line))
+        #expect(draft.back == "nóngfū shìjí — farmers market")
+        #expect(draft.needsReview)
+        // Unreadable Pinyin whose readings came that close is repaired the same way.
+        line.resolved?.pinyin = .init(value: nil, status: .unresolved)
+        line.resolved?.latinEvidence = ["none fu she ji farmers market"]
+        let repaired = FlashcardExtractor.extract(from: line)?.back
+        #expect(repaired == "nóngfū shìjí — farmers market")
+        // Unreadable Pinyin with nothing close is never replaced.
+        line.resolved?.latinEvidence = ["qqq zzz farmers market"]
+        let untouched = FlashcardExtractor.extract(from: line)?.back
+        #expect(untouched == "farmers market")
     }
 
     @Test func aKnownWordWithEnglishButNoPinyinStillShowsItsPinyin() throws {

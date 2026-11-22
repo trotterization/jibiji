@@ -69,6 +69,20 @@ enum FlashcardExtractor {
         }
         // No Pinyin written beside English: the card still shows the known reading.
         if pinyin == nil, resolved.pinyin.status == .absent, let entry { pinyin = entry.pinyin }
+        // Pinyin a few letters off the word's reading (`nong fo shi ji`), or unreadable while the readers came that close
+        // (`none fu she ji`), is the readers' mistake about the student's Pinyin: the card takes the dictionary's reading
+        // of the Hanzi, and is flagged for the student to check, as Suggest's dictionary repair is.
+        if let known = entry?.pinyin ?? lexicon?.pinyin(forPhrase: hanzi, written: nil) {
+            let target = Lexicon.foldedLetters(known)
+            let close = { (text: String) in StarterVocabulary.leadingRun(of: FieldValidation.words(text), near: target) != nil }
+            if let written = pinyin, Lexicon.foldedLetters(written) != target, close(written) {
+                pinyin = known
+                review = true
+            } else if resolved.pinyin.status == .unresolved, resolved.latinEvidence.contains(where: close) {
+                pinyin = known
+                review = true
+            }
+        }
         var gloss = resolved.english.isUsable ? resolved.english.value : nil
         if resolved.english.status == .tentative { review = true }
         var back: String

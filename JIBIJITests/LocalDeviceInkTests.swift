@@ -124,3 +124,58 @@ struct LocalNongfuInkTests {
         #expect(draft.back == "nóngfū shìjí — farmers market")
     }
 }
+
+/// A second iPad page of the same note, made into a card without Suggest. Its layout cut the Hanzi into `农夫市` and `集`
+/// (集 sits a little apart and is drawn smaller), and the Pinyin and English are one cell. Readings are the trace's.
+/// Strokes 0–13 are 农夫市, 14–26 集, 27–55 the Latin.
+@Suite("Saved device ink: 农夫市集 page 12 (local only)", .serialized)
+struct LocalNongfuPage12Tests {
+    static var url: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "jibiji-device-evidence-private/page-12-nongfu.drawing")
+    }
+    private static func read(_ texts: [(String, NoteEvidence.Engine)]) -> [NoteEvidence.Reading] {
+        texts.map { .init(text: $0.0, engine: $0.1, scope: .cell) }
+    }
+    private static let first = read([("农夫市", .pencilKit), ("农夫市", .paddleServer), ("农夫市", .paddle)])
+    private static let ji = read([("集", .pencilKit), ("集", .paddleServer), ("集", .paddle)])
+    private static let hanzi = read([("农夫市集", .pencilKit), ("农夫市集", .paddleServer), ("农夫市集", .paddle)])
+    private static let latin = read([("none fu she ji farmers market", .pencilKit), ("nong fi shi ji Farmers Maket", .paddleServer),
+                                     ("nong fi shi ji farmers market", .paddle)])
+    private static let row = read([("农夫市集none fu she ji farmers market", .pencilKit), ("农夫市集nong fo shi ji Farmers market", .paddleServer),
+                                   ("农夫市集nong fi shi ji Farmers market", .paddle)])
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: LocalNongfuPage12Tests.url.path)))
+    func oneNoteAndACardWithTones() async throws {
+        let drawing = try PKDrawing(data: Data(contentsOf: Self.url))
+        try #require(drawing.strokes.count == 56)
+        func readings(_ strokes: [PKStroke]) -> [NoteEvidence.Reading] {
+            let box = strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+            if box.minX < 500, box.maxX > 500 { return Self.row }
+            if box.minX >= 500 { return Self.latin }
+            if box.maxX < 375 { return Self.first }
+            if box.minX >= 375 { return Self.ji }
+            return Self.hanzi
+        }
+        let lines = try await NoteReading.lines(
+            in: drawing,
+            readRegion: { readings($0) },
+            readCell: { strokes, _ in
+                let e = readings(strokes)
+                guard let primary = PencilInkLineReader.primary(of: e) else { return nil }
+                return NoteReading.CellRead(text: primary, evidence: e)
+            })
+        for line in lines {
+            print("NONGFU12 text=\(line.text) hanzi=\(String(describing: line.resolved?.hanzi)) pinyin=\(String(describing: line.resolved?.pinyin)) english=\(String(describing: line.resolved?.english))")
+            print("NONGFU12 diagnostics:", line.resolved?.diagnostics ?? [])
+        }
+        #expect(lines.count == 1, "农夫市 and 集 are one word")
+        let line = try #require(lines.first)
+        #expect(line.resolved?.hanzi.value == "农夫市集")
+        #expect(line.resolved?.english.value?.lowercased() == "farmers market")
+        let draft = try #require(FlashcardExtractor.extract(from: line, lexicon: Lexicon.shared))
+        #expect(draft.front == "农夫市集")
+        #expect(draft.back.lowercased() == "nóngfū shìjí — farmers market")
+        #expect(draft.needsReview, "the Pinyin was not read as written: the student checks it")
+    }
+}

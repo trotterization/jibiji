@@ -163,7 +163,7 @@ enum NoteGrouping {
             let p = pieces[index]
             guard p.parsed.hanzi == nil, p.parsed.pinyin == nil, let english = p.parsed.english else { continue }
             let letters = StarterVocabulary.latinTokens(english).joined()
-            guard letters.count >= 2, letters.count <= 8 else { continue }
+            guard letters.count >= 2 else { continue }
             let cell = p.reading.cell.bounds
             let anchor = pieces.filter { a in
                 guard let hanzi = a.parsed.hanzi, !hanzi.isEmpty else { return false }
@@ -173,10 +173,22 @@ enum NoteGrouping {
             guard let hanzi = anchor?.parsed.hanzi else { continue }
             let rom = ReadingCrossCheck.romanization(of: hanzi)
             let vocab = vocabulary.entries.filter { $0.hanzi.hasPrefix(hanzi) }.map { $0.syllables.joined() }
-            let near = ([rom] + vocab).contains { target in
+            let near = letters.count <= 8 && ([rom] + vocab).contains { target in
                 !target.isEmpty && ((max(1, letters.count - 1))...(letters.count + 1)).contains { n in
                     n <= target.count && StarterVocabulary.editDistance(letters, String(target.prefix(n))) <= 1
                 }
+            }
+            // Pinyin and English written as one run (`nong fu shi ji farmers market`) with the Pinyin misread as English
+            // words (`none fu she ji`): the leading words that spell the Hanzi's reading, within a few letters, are the
+            // Pinyin, and the rest stays English.
+            let words = english.split(separator: " ").map(String.init)
+            if !near, let lead = ([rom] + vocab).compactMap({ StarterVocabulary.leadingRun(of: words, near: $0) }).min(by: { $0.distance < $1.distance }) {
+                var parsed = p.parsed
+                parsed.pinyin = words[..<lead.count].joined(separator: " ")
+                parsed.english = lead.count < words.count ? words[lead.count...].joined(separator: " ") : nil
+                parsed.notes.append("“\(parsed.pinyin!)” looks like a misread Pinyin for \(hanzi)")
+                pieces[index].parsed = parsed
+                continue
             }
             if near {
                 var parsed = p.parsed
@@ -221,11 +233,51 @@ enum NoteGrouping {
         return pieces
     }
 
+    private static func isHanziOnly(_ piece: Piece) -> Bool {
+        piece.parsed.hanzi != nil && piece.parsed.pinyin == nil && piece.parsed.english == nil && piece.parsed.ambiguousLatin == nil
+    }
+
+    /// One word written with ordinary spacing can reach grouping as two cells (`农夫市 | 集`) when a character sits a
+    /// little apart or is drawn smaller, which layout reads as a change of writing size. Hanzi-only neighbours on the same
+    /// row, less than about a character apart with nothing between them, are one run of Hanzi.
+    private static func joinHanziNeighbours(_ input: [Piece], vocabulary: StarterVocabulary) -> [Piece] {
+        var pieces = input
+        var joined = true
+        while joined {
+            joined = false
+            search: for i in pieces.indices where isHanziOnly(pieces[i]) {
+                for j in pieces.indices where j != i && isHanziOnly(pieces[j]) {
+                    let a = pieces[i].reading.cell.bounds, b = pieces[j].reading.cell.bounds
+                    let gap = b.minX - a.maxX
+                    let overlap = min(a.maxY, b.maxY) - max(a.minY, b.minY)
+                    guard gap >= -1, gap <= 0.8 * max(a.height, b.height), overlap > 0.5 * min(a.height, b.height) else { continue }
+                    let between = pieces.indices.contains { k in
+                        let c = pieces[k].reading.cell.bounds
+                        return k != i && k != j && c.minX >= a.maxX - 1 && c.maxX <= b.minX + 1 && min(c.maxY, a.maxY) - max(c.minY, a.minY) > 0
+                    }
+                    guard !between else { continue }
+                    let cell = NoteLayout.CellCandidate(
+                        strokeIndices: (pieces[i].reading.cell.strokeIndices + pieces[j].reading.cell.strokeIndices).sorted(),
+                        bounds: a.union(b), column: pieces[i].reading.cell.column,
+                        scale: max(pieces[i].reading.cell.scale, pieces[j].reading.cell.scale), gapBefore: pieces[i].reading.cell.gapBefore)
+                    let text = pieces[i].cellText + pieces[j].cellText
+                    pieces[i] = Piece(reading: .init(cell: cell, text: text), parsed: parse(text, vocabulary: vocabulary), cellText: text)
+                    pieces.remove(at: j)
+                    joined = true
+                    break search
+                }
+            }
+        }
+        return pieces
+    }
+
     static func entries(from readings: [Reading], vocabulary: StarterVocabulary = .standard) -> [Entry] {
-        let pieces = joinLatinNeighbours(reclassifyMisreadPinyin(readings.compactMap { reading -> Piece? in
+        let read = readings.compactMap { reading -> Piece? in
             guard let text = reading.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
             return Piece(reading: reading, parsed: parse(text, vocabulary: vocabulary), cellText: text)
-        }, vocabulary: vocabulary), vocabulary: vocabulary)
+        }
+        let pieces = joinLatinNeighbours(reclassifyMisreadPinyin(joinHanziNeighbours(read, vocabulary: vocabulary),
+                                                                 vocabulary: vocabulary), vocabulary: vocabulary)
 
         func field(_ text: String, _ piece: Piece) -> Field {
             Field(text: text, cellText: piece.cellText, strokeIndices: piece.reading.cell.strokeIndices, bounds: piece.reading.cell.bounds)

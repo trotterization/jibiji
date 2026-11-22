@@ -129,6 +129,23 @@ struct StarterVocabulary: Sendable {
         return pairs
     }
 
+    /// The leading words of `words` whose letters come closest to `reading` (toneless letters of a word's Pinyin, such as
+    /// `nongfushiji`), when they are within a quarter of its letters: `none fu she ji farmers market` → 4 words, 2 letters
+    /// off. Readings shorter than five letters are never matched this way: too many English words sit that close.
+    static func leadingRun(of words: [String], near reading: String) -> (count: Int, distance: Int)? {
+        guard reading.count >= 5, !words.isEmpty else { return nil }
+        let limit = reading.count / 4
+        var best: (count: Int, distance: Int)?
+        var letters = ""
+        for (index, word) in words.enumerated() {
+            letters += latinTokens(word).joined()
+            if letters.count > reading.count + limit { break }
+            let distance = editDistance(letters, reading)
+            if distance <= limit, best == nil || distance < best!.distance { best = (index + 1, distance) }
+        }
+        return best
+    }
+
     static func editDistance(_ a: String, _ b: String) -> Int {
         let a = Array(a), b = Array(b)
         var previous = Array(0...b.count)

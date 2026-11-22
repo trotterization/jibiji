@@ -164,9 +164,11 @@ enum NoteReading {
             let sole = Set(entry.fields.map(\.strokeIndices)).count == 1   // one cell holds several fields
             for cell in members {
                 guard let read = reads[cell.strokeIndices] else { continue }
+                // A cell that holds two fields (`nong fu shi ji farmers market`) is read as a line, not as either field.
+                let shared = entry.fields.filter { Set(cell.strokeIndices).isSubset(of: Set($0.strokeIndices)) }.count > 1
                 for reading in tagged(read) {
                     var r = reading
-                    r.field = sole ? nil : kind
+                    r.field = sole || shared ? nil : kind
                     r.partial = !whole
                     if !result.contains(r) { result.append(r) }
                 }

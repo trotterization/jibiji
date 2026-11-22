@@ -139,7 +139,7 @@ enum FieldResolver {
         var outvoted = false
         for reading in evidence {
             if reading.alternate { note("Alternate reading: “\(reading.text)” (\(reading.engine.rawValue))"); continue }
-            let parsed = parse(reading, vocabulary: vocabulary)
+            let parsed = parse(reading, vocabulary: vocabulary, contextHanzi: entry.hanzi?.text)
             // One cell of a multi-cell field (`xiang` of `hǎo xiang`) is a piece, not an answer for the whole field.
             // Its text still reaches the field through the grouping's joined text; here it is only a diagnostic.
             if reading.partial {
@@ -251,7 +251,8 @@ enum FieldResolver {
         String(text.filter { !$0.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) } })
     }
 
-    private static func parse(_ reading: NoteEvidence.Reading, vocabulary: StarterVocabulary) -> Parsed {
+    /// `contextHanzi` is the note's own Hanzi, for a reading of other ink in the same note (its Latin cell).
+    private static func parse(_ reading: NoteEvidence.Reading, vocabulary: StarterVocabulary, contextHanzi: String? = nil) -> Parsed {
         var result = Parsed()
         let text = reading.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return result }
@@ -271,6 +272,17 @@ enum FieldResolver {
             // A reading of the English field that is really Pinyin is not English.
             result.english = words.joined(separator: " ")
         case nil:
+            // The leading words that spell the note's Hanzi within a few letters (`none fu she ji` for 农夫市集) are its Pinyin,
+            // however garbled; the rest is English. Validation of that Pinyin happens later, as for any other reading.
+            if let anchor = result.hanzi ?? contextHanzi {
+                let targets = [ReadingCrossCheck.romanization(of: anchor)]
+                    + vocabulary.entries.filter { $0.hanzi == anchor }.map { $0.syllables.joined() }
+                if let lead = targets.compactMap({ StarterVocabulary.leadingRun(of: words, near: $0) }).min(by: { $0.distance < $1.distance }) {
+                    result.pinyin = Array(words[..<lead.count])
+                    if lead.count < words.count { result.english = words[lead.count...].joined(separator: " ") }
+                    return result
+                }
+            }
             // A line read as a whole: leading Pinyin-shaped words are the Pinyin, the rest is English.
             var end = 0
             while end < words.count, kinds[end] != .english { end += 1 }
