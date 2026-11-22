@@ -192,6 +192,89 @@ import Testing
         #expect(item.cleanText.hasSuffix("laptop"))
     }
 
+    // MARK: - Tones for a phrase the dictionary has no single entry for
+
+    @Test func aPhraseGetsItsTonesWordByWord() throws {
+        let lexicon = try #require(Lexicon.shared)
+        #expect(lexicon.rows(forHanzi: "农夫市集").isEmpty, "not one dictionary word")
+        #expect(lexicon.pinyin(forPhrase: "农夫市集", written: "nong fu shi ji") == "nóngfū shìjí")
+        #expect(lexicon.pinyin(forPhrase: "农夫市集", written: "nongfu shiji") == "nóngfū shìjí")
+        #expect(lexicon.pinyin(forPhrase: "农夫市集", written: nil) == "nóngfū shìjí")
+        #expect(lexicon.pinyin(forPhrase: "电脑", written: "dian nao") == "diànnǎo")
+        // Student tones that agree are kept in the result; tones that disagree leave the student's Pinyin alone.
+        #expect(lexicon.pinyin(forPhrase: "农夫市集", written: "nóng fu shi ji") == "nóngfū shìjí")
+        #expect(lexicon.pinyin(forPhrase: "农夫市集", written: "nòng fu shi ji") == nil)
+        // Letters that do not spell these words give nothing.
+        #expect(lexicon.pinyin(forPhrase: "农夫市集", written: "nong fu shi qi") == nil)
+    }
+
+    @Test func aWordWithTwoTonesForTheSameLettersIsNotGuessed() throws {
+        let lexicon = try #require(Lexicon.shared)
+        // 好 is hǎo or hào; 东西 is dōngxī or dōngxi. The letters alone cannot choose, so nothing is toned.
+        #expect(lexicon.pinyin(forPhrase: "好", written: "hao") == nil)
+        #expect(lexicon.pinyin(forPhrase: "东西", written: "dongxi") == nil)
+        #expect(lexicon.pinyin(forPhrase: "好", written: nil) == nil)
+        // A tone the student wrote does choose.
+        #expect(lexicon.pinyin(forPhrase: "好", written: "hǎo") == "hǎo")
+        // In a longer phrase the known words are toned and the undecided one keeps the student's letters.
+        #expect(lexicon.pinyin(forPhrase: "农夫东西", written: "nong fu dong xi") == "nóngfū dongxi")
+    }
+
+    @Test func aCardForAnUnlistedPhraseGetsDictionaryTones() throws {
+        // 电脑市集 is neither in the starter list nor one dictionary word; 电脑 and 市集 are.
+        let lexicon = try #require(Lexicon.shared)
+        var line = RecognizedLine(text: "电脑市集 dian nao shi ji computer fair", bounds: .zero)
+        line.resolved = ResolvedNote(
+            hanzi: .init(value: "电脑市集", status: .confirmed), pinyin: .init(value: "dian nao shi ji", status: .confirmed),
+            english: .init(value: "computer fair", status: .confirmed), diagnostics: [])
+        let draft = try #require(FlashcardExtractor.extract(from: line, lexicon: lexicon))
+        #expect(draft.front == "电脑市集")
+        #expect(draft.back == "diànnǎo shìjí — computer fair")
+        #expect(draft.needsReview, "not one dictionary word: the student checks it")
+        // Without the dictionary the written Pinyin is kept as written.
+        let plain = FlashcardExtractor.extract(from: line, lexicon: nil)?.back
+        #expect(plain == "dian nao shi ji — computer fair")
+        // No Pinyin written: the dictionary's reading is added.
+        var unwritten = line
+        unwritten.resolved?.pinyin = .absent
+        let added = FlashcardExtractor.extract(from: unwritten, lexicon: lexicon)?.back
+        #expect(added == "diànnǎo shìjí — computer fair")
+        // Pinyin written but unreadable is never replaced.
+        var unreadable = line
+        unreadable.resolved?.pinyin = .init(value: nil, status: .unresolved)
+        let kept = FlashcardExtractor.extract(from: unreadable, lexicon: lexicon)?.back
+        #expect(kept?.contains("diànnǎo") != true)
+    }
+
+    @Test func aKnownWordWithEnglishButNoPinyinStillShowsItsPinyin() throws {
+        // The approved iPad card was `农夫市集 → farmers market`: the Pinyin had been split off the note.
+        var line = RecognizedLine(text: "农夫市集 farmers market", bounds: .zero)
+        line.resolved = ResolvedNote(
+            hanzi: .init(value: "农夫市集", status: .confirmed), pinyin: .absent,
+            english: .init(value: "farmers market", status: .confirmed), diagnostics: [])
+        let back = FlashcardExtractor.extract(from: line)?.back
+        #expect(back == "nóngfū shìjí — farmers market")
+    }
+
+    @Test func pinyinReadAlikeByTwoEnginesOutvotesOneEnginesNonPinyin() {
+        // The iPad's readings of `nong fu shi ji`: PencilKit's `none fu she ji` is not Pinyin and must not decide the cell.
+        let cell: [NoteEvidence.Reading] = [
+            .init(text: "none fu she ji", engine: .pencilKit, scope: .cell),
+            .init(text: "nong fu shi ji", engine: .paddleServer, scope: .cell),
+            .init(text: "nong fu shi ji", engine: .paddle, scope: .cell),
+        ]
+        #expect(PencilInkLineReader.primary(of: cell) == "nong fu shi ji")
+        // Real English read by one engine and garbled by the others stays the English.
+        let english: [NoteEvidence.Reading] = [
+            .init(text: "farmers market", engine: .pencilKit, scope: .cell),
+            .init(text: "Farmers merket", engine: .paddleServer, scope: .cell),
+            .init(text: "Farmers mekeA", engine: .paddle, scope: .cell),
+        ]
+        #expect(PencilInkLineReader.primary(of: english) == "farmers market")
+        // One other engine is not enough to overrule.
+        #expect(PencilInkLineReader.primary(of: Array(cell.prefix(2))) == "none fu she ji")
+    }
+
     @Test func theAppNeverWaitsForTheDictionary() {
         // `full` reads the shared dictionary only if it is already loaded; it never blocks the caller to load it.
         let vocabulary = StarterVocabulary.full

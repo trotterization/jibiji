@@ -68,6 +68,8 @@ final class PageFlashcards {
     @ObservationIgnored private var saveFailed = false
     /// Exposed so tests can wait for a refresh.
     @ObservationIgnored private(set) var task: Task<Void, Never>?
+    /// The app's cards take tones from the bundled dictionary; tests with injected readers keep the small starter list.
+    @ObservationIgnored var usesDictionary = false
 
     init(pageID: String, store: NoteStore, reader: any InkLineReader = PencilInkLineReader(mode: .primaryOnly)) {
         self.pageID = pageID
@@ -283,7 +285,8 @@ final class PageFlashcards {
             cards[i].needsReview = true
         }
         for (index, line) in lines.enumerated() where !claimedLines.contains(index) {
-            guard var draft = FlashcardExtractor.extract(from: line, vocabulary: vocabulary) else { continue }
+            guard var draft = FlashcardExtractor.extract(from: line, vocabulary: vocabulary,
+                                                         lexicon: usesDictionary ? Lexicon.ifLoaded : nil) else { continue }
             draft.sourceText = line.rawText
             draft.needsReview = draft.needsReview || line.needsReview
             let key = Self.dedupeKey(front: draft.front, back: draft.back, kind: draft.kind)

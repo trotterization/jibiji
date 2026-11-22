@@ -184,6 +184,20 @@ extension PencilInkLineReader {
             StarterVocabulary.hanzi(in: text).isEmpty && PinyinValidator.analyze(words: FieldValidation.words(text)).isToned
         }
         if malformed(first.text), let better = ordered.first(where: { validPinyin($0.text) }) { return better.text }
+        // Plain Pinyin read alike by two other engines (`nong fu shi ji`) outvotes one engine's reading of the same ink that
+        // is not Pinyin at all (`none fu she ji`). Otherwise that misreading files the Pinyin as English and the note splits.
+        func syllables(_ text: String) -> Bool {
+            let words = FieldValidation.words(text).filter { $0.contains(where: \.isLetter) }
+            return StarterVocabulary.hanzi(in: text).isEmpty && !words.isEmpty
+                && words.allSatisfy { NoteGrouping.isSyllable(StarterVocabulary.latinTokens($0).joined()) }
+        }
+        if StarterVocabulary.hanzi(in: first.text).isEmpty, !syllables(first.text) {
+            let voters = Dictionary(grouping: ordered.filter { $0.engine != first.engine && syllables($0.text) },
+                                    by: { FieldValidation.letters(FieldValidation.words($0.text)) })
+            if let agreed = voters.values.filter({ Set($0.map(\.engine)).count >= 2 }).max(by: { $0.count < $1.count }) {
+                return agreed[0].text
+            }
+        }
         return first.text
     }
 }

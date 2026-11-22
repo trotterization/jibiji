@@ -72,6 +72,7 @@ final class NotePageModel {
             store: store,
             reader: lineReader ?? PencilInkLineReader(mode: .primaryOnly)
         )
+        flashcards.usesDictionary = lineReader == nil
         self.store = store
         self.autosaveDelay = autosaveDelay
         let opened = Self.open(pageID: pageID, from: store)

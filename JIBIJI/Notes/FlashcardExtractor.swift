@@ -34,7 +34,9 @@ enum FlashcardExtractor {
 
     /// The shared path for a recognized note: special card kinds are decided from its clean text, and an ordinary
     /// term card is built from the validated fields, so Pinyin is never filed as English and English is never invented.
-    static func extract(from line: RecognizedLine, vocabulary: StarterVocabulary = .standard) -> FlashcardDraft? {
+    /// `lexicon`, when given, supplies dictionary tones for a term the starter list does not know (农夫市集 nong fu shi ji →
+    /// nóngfū shìjí, from 农夫 + 市集). Such a card is still flagged for review.
+    static func extract(from line: RecognizedLine, vocabulary: StarterVocabulary = .standard, lexicon: Lexicon? = nil) -> FlashcardDraft? {
         guard let resolved = line.resolved else { return extract(from: line.text, vocabulary: vocabulary) }
         let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let special = labeled(text) != nil || text.contains("→") || text.contains("->")
@@ -60,6 +62,13 @@ enum FlashcardExtractor {
         } else if entry == nil {
             review = true   // a term the starter vocabulary has never heard of
         }
+        // Pinyin that was written but could not be read is not replaced; untoned or missing Pinyin gets dictionary tones.
+        if entry == nil, let lexicon, resolved.pinyin.status != .unresolved,
+           let toned = lexicon.pinyin(forPhrase: hanzi, written: pinyin) {
+            pinyin = toned
+        }
+        // No Pinyin written beside English: the card still shows the known reading.
+        if pinyin == nil, resolved.pinyin.status == .absent, let entry { pinyin = entry.pinyin }
         var gloss = resolved.english.isUsable ? resolved.english.value : nil
         if resolved.english.status == .tentative { review = true }
         var back: String

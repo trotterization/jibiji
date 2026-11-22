@@ -137,6 +137,84 @@ final class Lexicon: @unchecked Sendable {
 
     func rows(forLetters letters: String) -> [Row] { (byLetters[letters] ?? []).map { rows[$0] } }
 
+    /// Dictionary Pinyin for a Hanzi phrase, built word by word, so a phrase with no entry of its own still gets its
+    /// tones (农夫市集 → 农夫 + 市集 → `nóngfū shìjí`). The phrase is split into dictionary words, longest first.
+    /// With written Pinyin, the words' readings must spell the student's letters in order and agree with any tone marks
+    /// the student wrote; a word whose matching readings differ only in tone (东西 dōngxī / dōngxi) keeps the letters
+    /// untoned. With no written Pinyin, every word must have exactly one reading. Nil when some part is no dictionary
+    /// word, the letters do not fit, or nothing would gain a tone.
+    func pinyin(forPhrase hanzi: String, written: String?) -> String? {
+        let chars = Array(hanzi)
+        guard !chars.isEmpty, chars.count <= 24,
+              chars.allSatisfy({ $0.unicodeScalars.allSatisfy { (0x3400...0x9FFF).contains($0.value) } }) else { return nil }
+        // The student's letters, folded as `foldedLetters` does, and the tone mark written on any of them.
+        var target: [Character]?
+        var markAt: [Int: Int] = [:]
+        if let written {
+            let toneOf: [UInt32: Int] = [0x0304: 1, 0x0301: 2, 0x030C: 3, 0x0300: 4]
+            var letters: [Character] = []
+            for ch in written.lowercased().replacingOccurrences(of: "×", with: "x").replacingOccurrences(of: "√", with: "v") {
+                let scalars = String(ch).decomposedStringWithCanonicalMapping.unicodeScalars
+                let base = scalars.filter { $0.isASCII && CharacterSet.letters.contains($0) }.map { Character($0) }
+                guard !base.isEmpty else { continue }
+                letters += base.map { $0 == "v" ? "u" : $0 }
+                if let tone = scalars.compactMap({ toneOf[$0.value] }).first { markAt[letters.count - 1] = tone }
+            }
+            guard !letters.isEmpty else { return nil }
+            target = letters
+        }
+        /// Whether a reading starting at letter `j` has the tone the student marked on each of its syllables.
+        func agreesWithMarks(_ numbered: String, at j: Int) -> Bool {
+            var position = j
+            for syllable in numbered.split(separator: " ") {
+                let count = Lexicon.letters(of: String(syllable)).count
+                let tone = Int(syllable.last.map { String($0) } ?? "") ?? 5
+                if (position..<(position + count)).contains(where: { markAt[$0].map { $0 != tone } ?? false }) { return false }
+                position += count
+            }
+            return true
+        }
+        // Real words first; a name or variant reading only when the Hanzi has nothing else.
+        func readings(_ word: String) -> [Row] {
+            let all = rows(forHanzi: word)
+            let real = all.filter { !$0.isReference }
+            return real.isEmpty ? all : real
+        }
+        struct Piece { var text: String; var toned: Bool }
+        var memo: [Int: [Piece]?] = [:]
+        func solve(_ i: Int, _ j: Int) -> [Piece]? {
+            if i == chars.count { return target == nil || j == target?.count ? [] : nil }
+            let key = i * 10_000 + j
+            if let known = memo[key] { return known }
+            var found: [Piece]?
+            for end in stride(from: min(chars.count, i + 8), to: i, by: -1) where found == nil {
+                let rows = readings(String(chars[i..<end]))
+                guard !rows.isEmpty else { continue }
+                var spellings: [String: Set<String>] = [:]   // letters → the distinct tone readings with those letters
+                for row in rows { spellings[row.letters, default: []].insert(row.numbered.lowercased()) }
+                if let target {
+                    for (letters, numbered) in spellings.sorted(by: { $0.key.count > $1.key.count }) where found == nil {
+                        guard !letters.isEmpty, j + letters.count <= target.count,
+                              String(target[j..<(j + letters.count)]) == letters else { continue }
+                        // Readings that contradict a tone the student wrote are out; if none is left, so is this split.
+                        let fitting = numbered.filter { agreesWithMarks($0, at: j) }
+                        guard !fitting.isEmpty, let rest = solve(end, j + letters.count) else { continue }
+                        let piece = fitting.count == 1 ? Piece(text: Lexicon.toneMarked(fitting.first!), toned: true)
+                                                       : Piece(text: letters, toned: false)
+                        found = [piece] + rest
+                    }
+                } else if spellings.count == 1, let numbered = spellings.first?.value, numbered.count == 1,
+                          let rest = solve(end, 0) {
+                    found = [Piece(text: Lexicon.toneMarked(numbered.first!), toned: true)] + rest
+                }
+            }
+            memo[key] = .some(found)
+            return found
+        }
+        guard let pieces = solve(0, 0), pieces.contains(where: \.toned) else { return nil }
+        return pieces.map(\.text).joined(separator: " ")
+    }
+
     // MARK: - Candidate selection for the suggestion matcher
 
     /// The few dictionary entries worth trying for a note's validated text, best first. The suggestion matcher then
