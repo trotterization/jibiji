@@ -117,7 +117,7 @@ final class NotePageModel {
     @discardableResult
     func replaceSuggestion(_ id: UUID, with text: String) -> Bool {
         guard isEditable, let item = suggestions.pending.first(where: { $0.id == id }) else { return false }
-        // An uncertain reading (tone or spelling mismatch) may be the recognizer's mistake: never edit ink for it.
+        // Replace is the student's call; an uncertain reading shows its caveat on the chip and Restore undoes it.
         guard item.allowsInkReplacement else {
             notice = "This reading is uncertain, so your handwriting was not changed. You can add it as a note instead."
             return false

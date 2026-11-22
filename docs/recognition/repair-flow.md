@@ -21,7 +21,7 @@ original ink
    - Hanzi: Han ideographs only.
    - Pinyin: must split into real Mandarin syllables with at most one tone mark per syllable, on a vowel. `hňo` is not Pinyin. A malformed reading of Pinyin stays *Pinyin-unresolved*; it never becomes the English field.
    - English: must not be a romanization (checked against the Hanzi's romanization and Pinyin syllable validity) and not carry tone diacritics.
-5. **Status per field**: `confirmed` (valid and corroborated by another reading or the vocabulary), `tentative` (valid, one source or disputed tones), `unresolved` (no valid reading; the field is empty, not guessed). A note with an unresolved or tentative Hanzi/Pinyin never offers to replace the student's ink.
+5. **Status per field**: `confirmed` (valid and corroborated by another reading or the vocabulary), `tentative` (valid, one source or disputed tones), `unresolved` (no valid reading; the field is empty, not guessed). Replace is always offered (product decision, 2026-11-21): the chip previews the exact text it writes, an unresolved or tentative field shows its caveat on the chip, and Restore brings the original strokes back. An unresolved field is never filled by a guess.
 6. **Nothing is invented.** Unknown words stay unresolved: no English is produced. Only entries of the offline starter vocabulary propose completions.
 7. **Accepted fields win.** Cards use the accepted Hanzi/Pinyin/English of a note; a note without approved English makes no card.
 

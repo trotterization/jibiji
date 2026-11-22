@@ -46,7 +46,7 @@ struct InkReplacementTests {
         print("LOCAL CLEAN INK PREVIEW: \(file.path)")
     }
 
-    @Test func uncertainReadingNeverReplacesInkEvenFromTheEditPath() async throws {
+    @Test func uncertainReadingCanBeReplacedAndRestored() async throws {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let store = NoteStore(directory: folder)
         let ink = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 80, y: 160))
@@ -56,12 +56,13 @@ struct InkReplacementTests {
         page.suggestions.request(for: page.drawing)
         await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
-        #expect(!item.allowsInkReplacement)
-        #expect(!page.replaceSuggestion(item.id, with: "农夫市集 nóngfū shìjí"))
-        #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: ink))
-        // It can still be kept as a note beside the ink.
-        page.suggestions.accept(item.id)
-        #expect(page.suggestions.annotations.count == 1)
+        // Uncertain: the chip says so, and Replace is still the student's call.
+        #expect(item.uncertaintyNote != nil)
+        #expect(page.replaceSuggestion(item.id, with: "农夫市集 nóngfū shìjí"))
+        #expect(PageFlashcards.digest(of: page.drawing) != PageFlashcards.digest(of: ink))
+        // Restore brings back exactly the original strokes.
+        let note = try #require(page.latestVisibleReplacement)
+        #expect(page.restoreOriginal(note.id))
         #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: ink))
     }
 

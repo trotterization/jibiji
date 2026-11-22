@@ -221,7 +221,7 @@ struct PendingSuggestion: Identifiable, Equatable {
     var uncertaintyNote: String? {
         if let readingNote { return readingNote }
         guard selectedIndex == 0 else {
-            return proposal.pinyinState.isUncertain ? "The line as written was uncertain, so this alternative can only be added as a note." : nil
+            return proposal.pinyinState.isUncertain ? "The line as written was uncertain. Check this alternative before replacing; Restore brings your ink back." : nil
         }
         switch proposal.pinyinState {
         case .wrongTones(let written):
@@ -234,11 +234,9 @@ struct PendingSuggestion: Identifiable, Equatable {
         }
     }
 
-    /// Replacing ink is offered only when the reading is solid. A tone or spelling mismatch could be the
-    /// recognizer's mistake, so those stay notes beside the ink.
-    var allowsInkReplacement: Bool {
-        !inkEditSuppressed && (!proposal.pinyinState.isUncertain || proposal.pinyinFromDictionary || proposal.correctsConfirmedPinyin)
-    }
+    /// Replace is always offered (the student's decision). The chip previews exactly the text it writes, an uncertain
+    /// reading shows its caveat (`uncertaintyNote`), and Restore brings the original strokes back.
+    var allowsInkReplacement: Bool { true }
 
     /// The note to add beside the ink: Hanzi unless already written, then the gloss unless already written.
     var annotationText: String {
