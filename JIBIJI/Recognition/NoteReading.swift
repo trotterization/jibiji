@@ -63,7 +63,13 @@ enum NoteReading {
             try Task.checkCancellation()
             let strokes = cell.strokeIndices.map { drawing.strokes[$0] }
             var read = try await readCell(strokes, cell)
-            if let word = wordForCell[cell.strokeIndices], isUsableRowWord(word.text) {
+            // The row word must be the kind of writing (Hanzi or Latin) at least one reader saw in this cell, so a miscounted
+            // row never puts Pinyin into a cell every reader read as Hanzi (or the reverse).
+            if let word = wordForCell[cell.strokeIndices], isUsableRowWord(word.text),
+               read.map({ own in
+                   let seen = [own.text] + own.readings + own.evidence.map(\.text)
+                   return seen.contains { !$0.isEmpty && containsHanzi($0) == FieldValidation.isHanzi(word.text) }
+               }) ?? true {
                 var evidence = read?.evidence ?? []
                 if evidence.isEmpty, let own = read { evidence = [.init(text: own.text, engine: .other, scope: .cell)] }
                 #if DEBUG
@@ -135,6 +141,10 @@ enum NoteReading {
         }
         if !current.isEmpty { words.append(current) }
         return words
+    }
+
+    private static func containsHanzi(_ text: String) -> Bool {
+        text.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) }
     }
 
     /// A word read in context is used for its cell only when it is Hanzi or spelled as Pinyin; anything else is left to

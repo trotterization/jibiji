@@ -133,7 +133,10 @@ enum FieldResolver {
                   !FieldValidation.isEnglish(words.joined(separator: " "), hanzi: nil, vocabulary: vocabulary) else { continue }
             syllableVoters[FieldValidation.letters(words), default: []].insert(reading.engine)
         }
-        let voted = syllableVoters.filter { $0.value.count >= 2 }.max { $0.value.count < $1.value.count }
+        // Most voters wins; ties break by spelling so the result never depends on dictionary order.
+        let voted = syllableVoters.filter { $0.value.count >= 2 }
+            .max { $0.value.count != $1.value.count ? $0.value.count < $1.value.count : $0.key > $1.key }
+        var outvoted = false
         for reading in evidence {
             if reading.alternate { note("Alternate reading: “\(reading.text)” (\(reading.engine.rawValue))"); continue }
             let parsed = parse(reading, vocabulary: vocabulary)
@@ -170,7 +173,7 @@ enum FieldResolver {
                     pinyin.append(Candidate(text: words.joined(separator: " "), source: reading.source,
                                             toned: PinyinValidator.analyze(words: words).isToned, rank: rank(reading)))
                 } else {
-                    misfiled = true
+                    outvoted = true
                     note("English reading outvoted as misread Pinyin: “\(e)” (\(reading.source))")
                 }
             } else if let e = parsed.english {
@@ -194,25 +197,8 @@ enum FieldResolver {
         }
 
         let hanziField = pickHanzi(hanzi, entry: entry, vocabulary: vocabulary, note: note)
-        var pinyinField = pickPinyin(pinyin, entry: entry, hanzi: hanziField.value, pinyinSeen: pinyinSeen, vocabulary: vocabulary, note: note)
-        // The engines agreed on the letters but dropped the tone mark, which only their lower-ranked guesses kept (`Shi`, with
-        // `Shì` below it). When those guesses agree on a single toned spelling of exactly these letters, it is used, tentatively.
-        if let value = pinyinField.value, !PinyinValidator.analyze(words: FieldValidation.words(value)).isToned {
-            let letters = FieldValidation.letters(FieldValidation.words(value))
-            var toned: [String: String] = [:]
-            for reading in evidence where reading.alternate {
-                let words = FieldValidation.words(latinPart(reading.text)).filter { $0.contains(where: \.isLetter) }
-                let verdict = PinyinValidator.analyze(words: words)
-                guard !words.isEmpty, verdict.isValid, verdict.isToned, FieldValidation.letters(words) == letters else { continue }
-                let spelling = words.joined(separator: " ").precomposedStringWithCanonicalMapping.lowercased()
-                toned[spelling.replacingOccurrences(of: " ", with: ""), default: spelling] = toned[spelling.replacingOccurrences(of: " ", with: "")] ?? spelling
-            }
-            if toned.count == 1, let spelling = toned.values.first {
-                note("Tone mark taken from a lower-ranked reading: “\(spelling)”")
-                pinyinField = ResolvedField(value: spelling, status: .tentative,
-                                            note: "the tone mark came from a lower-ranked reading", sources: pinyinField.sources)
-            }
-        }
+        let pinyinField = pickPinyin(pinyin, entry: entry, hanzi: hanziField.value, pinyinSeen: pinyinSeen, vocabulary: vocabulary, note: note)
+
         // With Pinyin settled, the Hanzi that fits it is preferred over a conflicting reading.
         var finalHanzi = hanziField
         if hanzi.count > 1, let letters = pinyinField.value.map({ FieldValidation.letters(FieldValidation.words($0)) }) {
@@ -228,6 +214,10 @@ enum FieldResolver {
         var englishField = pickEnglish(english, entry: entry, hanzi: finalHanzi.value, vocabulary: vocabulary, note: note)
         // If every English reading was really Pinyin, nothing English was written.
         if misfiled, english.isEmpty { englishField = .absent }
+        // Outvoted English was still written by someone's reading; it is doubtful, not absent.
+        if outvoted, english.isEmpty {
+            englishField = ResolvedField(value: nil, status: .unresolved, note: "two readers read this as Pinyin instead")
+        }
         var latinEvidence: [String] = []
         for reading in evidence where reading.scope != .cell || reading.field == .pinyin {
             let latin = String(reading.text.filter { !$0.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) } })

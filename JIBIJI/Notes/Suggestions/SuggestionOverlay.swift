@@ -183,7 +183,10 @@ private struct PendingChip: View {
                 Text(item.allowsInkReplacement ? item.cleanText : item.annotationText)
                     .font(Font(CleanHandwriting.font(size: 22)))
                     .foregroundStyle(Color.primary)
-                    .lineLimit(1)
+                    // Up to three lines, so the preview shows the whole text Replace will write.
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 420, alignment: .leading)
                     .contentTransition(.opacity)
                     .accessibilityIdentifier("replacementPreview")
                 if let note = item.uncertaintyNote {

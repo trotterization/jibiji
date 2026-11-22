@@ -227,7 +227,8 @@ struct PendingSuggestion: Identifiable, Equatable {
         case .wrongTones(let written):
             return "Tone marks differ from “\(candidate.pinyin)” (you wrote “\(written)”). Check before accepting."
         case .possibleSpelling(let written) where proposal.pinyinFromDictionary:
-            return "Your Pinyin “\(written)” couldn't be read reliably. The dictionary word that fits it and your Hanzi is “\(candidate.hanzi)” (\(candidate.pinyin)). Check it. Your ink is unchanged."
+            let fits = proposal.hanziAlreadyWritten || !proposal.hanziPrefixWritten.isEmpty ? "it and your Hanzi" : "it"
+            return "Your Pinyin “\(written)” couldn't be read reliably. The dictionary word that fits \(fits) is “\(candidate.hanzi)” (\(candidate.pinyin)). Check it before replacing."
         case .possibleSpelling(let written):
             return "Unsure: “\(written)” is close to “\(candidate.pinyin)”. It may be a spelling slip or a misread. Your ink is unchanged."
         default: return nil
@@ -501,14 +502,23 @@ final class PageSuggestionModel {
                 var seen = Set<String>()
                 // Only a vocabulary entry proposes a completion, from the note's validated text. Raw OCR readings are
                 // never offered as words, alternatives or replacement text; they stay in `line.resolved.diagnostics`.
-                let known = vocabulary.proposal(forRecognizedText: line.text)
+                // Whether the Latin text is the note's Pinyin: English-only notes are never looked up as Pinyin (`like`).
+                let latinIsPinyin: Bool? = line.resolved.flatMap { resolved -> Bool? in
+                    guard resolved.pinyin.isUsable else { return false }
+                    return resolved.english.isUsable ? nil : true
+                }
+                let known = vocabulary.proposal(forRecognizedText: line.text, latinIsPinyin: latinIsPinyin)
                 // Pinyin was written (so the note is more than bare Hanzi) but the match above did not use it: the Hanzi
                 // alone matched. The readers' Pinyin guesses may be close to a longer dictionary word that begins with the Hanzi.
                 let pinyinWritten = line.resolved.map { $0.pinyin.status != .absent } ?? false
                 // With no Hanzi, only readings that are shaped like Pinyin count, and at least one must carry a tone mark:
                 // an English word never reaches the dictionary as Pinyin.
                 var evidence = line.resolved?.latinEvidence ?? []
-                if StarterVocabulary.hanziRuns(in: line.text).isEmpty {
+                if StarterVocabulary.hanziRuns(in: line.text).isEmpty,
+                   line.resolved.map({ $0.pinyin.status == .absent || $0.english.isUsable }) == true {
+                    // No Hanzi, and either no Pinyin was written or the note's English was read: nothing to repair.
+                    evidence = []
+                } else if StarterVocabulary.hanziRuns(in: line.text).isEmpty {
                     evidence = evidence.filter { text in
                         let words = FieldValidation.words(text)
                         return !words.isEmpty && words.allSatisfy { FieldValidation.kind(of: $0) != .english }
@@ -516,7 +526,9 @@ final class PageSuggestionModel {
                     if !evidence.contains(where: { $0 != $0.folding(options: .diacriticInsensitive, locale: nil) }) { evidence = [] }
                 }
                 let repaired = (known == nil || (pinyinWritten && known?.pinyinAlreadyWritten == false))
-                    ? vocabulary.repairedProposal(forRecognizedText: line.text, latinEvidence: evidence) : nil
+                    ? vocabulary.repairedProposal(forRecognizedText: line.text, latinEvidence: evidence,
+                                                  writtenPinyin: line.resolved?.pinyin.value,
+                                                  writtenEnglish: line.resolved.flatMap { $0.english.isUsable ? $0.english.value : nil }) : nil
                 #if DEBUG
                 DebugTrace.log("decide text=“\(line.text)” source=“\(line.sourceText ?? "-")” pinyinStatus=\(line.resolved?.pinyin.status.rawValue ?? "nil") evidence=\(line.resolved?.latinEvidence.count ?? -1) known=\(known?.candidates.map { $0.hanzi + " " + $0.pinyin } ?? []) knownPinyinWritten=\(known?.pinyinAlreadyWritten ?? false) repaired=\(repaired?.candidates.map { $0.hanzi + " " + $0.pinyin } ?? [])")
                 #endif
@@ -557,7 +569,7 @@ final class PageSuggestionModel {
                 }
                 // The readers agree on the Pinyin as written and only its tone marks differ from the dictionary's.
                 if case .wrongTones = proposal.pinyinState, line.resolved?.pinyin.status == .confirmed,
-                   line.resolved?.hanzi.isSolid == true {
+                   line.resolved?.hanzi.status == .confirmed {
                     proposal.correctsConfirmedPinyin = true
                     suppressInk = false
                 }

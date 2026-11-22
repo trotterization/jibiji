@@ -235,17 +235,22 @@ struct RecognitionRepairTests {
         .init(text: text, engine: engine, scope: scope, field: scope == .cell ? .english : nil, alternate: alternate)
     }
 
-    @Test func twoReadersAgreeingOnASyllableOutvoteOneEnglishLookAlike() {
+    @Test func twoReadersAgreeingOnASyllableOutvoteOneEnglishLookAlike() throws {
         var readings: [NoteEvidence.Reading] = []
         for scope in [NoteEvidence.Scope.cell, .entry] {
             readings += [reading("She", .pencilKit, scope), reading("Shi", .paddleServer, scope), reading("Shi", .paddle, scope)]
             readings += ["Shì", "S hi", "S hì", "shi"].map { reading($0, .paddle, scope, alternate: true) }
         }
         let resolved = FieldResolver.resolve(entry: shiEntry("She"), readings: readings)
-        #expect(resolved.pinyin.value == "shì")
-        #expect(resolved.pinyin.status == .tentative)
-        #expect(resolved.english.status == .absent)
+        #expect(resolved.pinyin.value?.lowercased() == "shi")
+        // No tone mark is invented from lower-ranked guesses; the dictionary supplies the tone instead.
+        #expect(!resolved.diagnostics.contains { $0.contains("Tone mark taken") })
+        // Outvoted English is doubtful, not "nothing written".
+        #expect(resolved.english.status == .unresolved)
         #expect(resolved.diagnostics.contains { $0.contains("outvoted") })
+        let lexicon = try #require(Lexicon.shared)
+        let vocabulary = StarterVocabulary(entries: StarterVocabulary.standard.entries, lexicon: lexicon)
+        #expect(vocabulary.proposal(forRecognizedText: resolved.cleanText, latinIsPinyin: true)?.candidates.first?.hanzi == "是")
     }
 
     @Test func aRealEnglishWordReadAlikeStaysEnglish() {

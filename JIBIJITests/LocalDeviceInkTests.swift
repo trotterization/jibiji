@@ -11,19 +11,20 @@ import Testing
 struct LocalDeviceInkTests {
     private static var url: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appending(path: "jibiji-device-evidence-private/page-5.drawing")
+            // `page-6.drawing` is the saved `好 hǎo xiang` page: strokes 0–3 `hǎo`, 4–10 `xiang`, 11–14 `好`.
+            .appending(path: "jibiji-device-evidence-private/page-6.drawing")
     }
 
     @Test(.enabled(if: FileManager.default.fileExists(atPath: LocalDeviceInkTests.url.path)))
     func realSpacingJoinsHaoAndXiangIntoOnePinyinField() async throws {
         let drawing = try PKDrawing(data: Data(contentsOf: Self.url))
         func piece(_ strokes: [PKStroke]) -> Set<String> { Set(strokes.map(InkSelection.identity)) }
-        let hanziIDs = Set(drawing.strokes[0...3].map(InkSelection.identity))
+        let hanziIDs = Set(drawing.strokes[11...14].map(InkSelection.identity))
         func evidence(_ strokes: [PKStroke]) -> [NoteEvidence.Reading] {
             let ids = Set(strokes.map(InkSelection.identity))
             if ids.isSubset(of: hanziIDs) { return [.init(text: "好", engine: .vision, scope: .cell)] }
             // Cells of the Pinyin: first the `hǎo` letters (misread as in the observed failure), then `xiang`.
-            let hao = Set(drawing.strokes[4...7].map(InkSelection.identity))
+            let hao = Set(drawing.strokes[0...3].map(InkSelection.identity))
             if ids.isSubset(of: hao) { return [.init(text: "hňo", engine: .vision, scope: .cell)] }
             return [.init(text: "xiang", engine: .vision, scope: .cell)]
         }

@@ -25,10 +25,20 @@ final class Lexicon: @unchecked Sendable {
         /// The meaning shown on a card: the first one or two real senses, trimmed.
         var gloss: String { Lexicon.shortGloss(glosses) }
 
+        /// A name, a variant, a cross-reference (`used in 上聲`) or an entry with no usable meaning. Never the first offer
+        /// when a real word with the same Hanzi or spelling exists.
+        var isReference: Bool {
+            if isProperName || isVariant || Lexicon.cleanSenses(glosses).isEmpty { return true }
+            let first = glosses.first?.lowercased() ?? ""
+            return first.hasPrefix("used in") || first.hasPrefix("abbr. for") || first.hasPrefix("see ")
+        }
+
         /// An entry the existing suggestion matcher can use. Its glosses are the short gloss plus each sense.
         var entry: StarterVocabulary.Entry {
             let senses = Lexicon.cleanSenses(glosses)
-            return .init(hanzi: hanzi, pinyin: pinyin, glosses: ([gloss] + senses.prefix(8)).filter { !$0.isEmpty })
+            let glosses = ([gloss] + senses.prefix(8)).filter { !$0.isEmpty }
+            // `Entry.candidate` reads the first gloss, so an entry always has one (empty when the dictionary gives no real sense).
+            return .init(hanzi: hanzi, pinyin: pinyin, glosses: glosses.isEmpty ? [""] : glosses)
         }
     }
 
@@ -84,19 +94,33 @@ final class Lexicon: @unchecked Sendable {
 
     // MARK: - Shared instance
 
-    private static let lock = NSLock()
+    private static let stateLock = NSLock()
+    private static let loadLock = NSLock()
     nonisolated(unsafe) private static var cached: Lexicon??
 
-    /// The bundled dictionary, or nil when the table is missing. Loaded once; call `warmUp()` at launch so the first
-    /// request does not wait for the parse.
+    private static func peek() -> Lexicon?? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return cached
+    }
+
+    /// The bundled dictionary, or nil when the table is missing. Loads it (about a second) on first use and waits for it,
+    /// so the app never calls this on the main thread: it reads `ifLoaded` and warms this up at launch.
     static var shared: Lexicon? {
-        lock.lock(); defer { lock.unlock() }
-        if let cached { return cached }
+        if let done = peek() { return done }
+        loadLock.lock(); defer { loadLock.unlock() }
+        if let done = peek() { return done }
         let loaded = Bundle.main.url(forResource: "CEDICT", withExtension: "tsv")
             .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
             .map { Lexicon(tsv: $0) }
-        cached = .some(loaded)
+        stateLock.lock(); cached = .some(loaded); stateLock.unlock()
         return loaded
+    }
+
+    /// The dictionary if it has finished loading, else nil (never waits). Suggestions fall back to the curated list meanwhile.
+    static var ifLoaded: Lexicon? {
+        if let done = peek() { return done }
+        warmUp()
+        return nil
     }
 
     static func warmUp() { Task.detached(priority: .utility) { _ = Lexicon.shared } }
@@ -122,7 +146,9 @@ final class Lexicon: @unchecked Sendable {
     ///   spells that word.
     /// - Pinyin only: entries that spell exactly the written syllables, if the Pinyin carries tone marks or is at least
     ///   two syllables. A single toneless syllable (`me`, `he`) is too likely to be English to look up.
-    func candidates(forText text: String) -> [Row] {
+    /// `latinIsPinyin`: whether the Latin text is known to be the note's Pinyin (true), known not to be (false: no
+    /// Pinyin-only lookup at all), or unknown (nil: only tone-marked or multi-syllable Pinyin is looked up).
+    func candidates(forText text: String, latinIsPinyin: Bool? = nil) -> [Row] {
         let runs = StarterVocabulary.hanziRuns(in: text)
         let pairs = StarterVocabulary.latinTokenPairs(text)
         let tokens = pairs.map(\.folded)
@@ -139,7 +165,7 @@ final class Lexicon: @unchecked Sendable {
             return Array(Self.ranked(out, written: pairs).prefix(6))
         }
 
-        guard !tokens.isEmpty else { return [] }
+        guard !tokens.isEmpty, latinIsPinyin != false else { return [] }
         let toned = pairs.contains { $0.raw != $0.folded }
         var found: [Row] = []
         // Any contiguous run of the written words may be the Pinyin (the rest is English).
@@ -148,8 +174,9 @@ final class Lexicon: @unchecked Sendable {
             for end in start..<min(tokens.count, start + 6) {
                 letters += tokens[end]
                 let words = end - start + 1
-                guard toned || words >= 2 || letters.count >= 4 else { continue }
-                found += rows(forLetters: letters).filter { !$0.isProperName && !$0.isVariant && $0.hanzi.count >= 1 }
+                // A single plain word (`like`, `long`) is English until the note says it is Pinyin.
+                guard toned || words >= 2 || latinIsPinyin == true else { continue }
+                found += rows(forLetters: letters).filter { !$0.isReference && $0.hanzi.count >= 1 }
             }
         }
         return Array(Self.ranked(found, written: Array(pairs)).prefix(6))
@@ -164,7 +191,10 @@ final class Lexicon: @unchecked Sendable {
         let normalized = readings.map(Self.foldedLetters).filter { $0.count >= 3 }
         guard !run.isEmpty, !normalized.isEmpty else { return [] }
         var best: [String: (row: Row, score: Int, index: Int)] = [:]
-        for (index, row) in rows(withHanziPrefix: run).enumerated() where !row.isProperName && !row.isVariant {
+        let marksWritten = readings.map(Self.writtenMarks)
+        for (index, row) in rows(withHanziPrefix: run).enumerated() where !row.isReference {
+            // Tone marks the readers saw must fit the word, in order.
+            if !marksWritten.isEmpty, !marksWritten.contains(where: { $0.isEmpty || Self.isSubsequence($0, of: row.tones) }) { continue }
             let letters = row.letters
             guard letters.count >= 3 else { continue }
             let allowed = letters.count > 7 ? 2 : 1
@@ -175,6 +205,7 @@ final class Lexicon: @unchecked Sendable {
         }
         let sorted = best.values.sorted {
             if $0.score != $1.score { return $0.score < $1.score }
+            if $0.row.isReference != $1.row.isReference { return !$0.row.isReference }
             if $0.row.frequency != $1.row.frequency { return $0.row.frequency > $1.row.frequency }
             if $0.row.hanzi.count != $1.row.hanzi.count { return $0.row.hanzi.count < $1.row.hanzi.count }
             return $0.index < $1.index
@@ -194,8 +225,9 @@ final class Lexicon: @unchecked Sendable {
         var seen = Set<String>()
         let usable = readings.compactMap { reading -> (letters: String, tones: [Int])? in
             let letters = Self.foldedLetters(reading)
-            guard letters.count >= 4, seen.insert(letters + "|" + Self.writtenToneList(reading).map(String.init).joined()).inserted else { return nil }
-            return (letters, Self.writtenToneList(reading))
+            let marks = Self.writtenMarks(reading)
+            guard letters.count >= 4, seen.insert(letters + "|" + marks.map(String.init).joined()).inserted else { return nil }
+            return (letters, marks)
         }.prefix(8)
         guard !usable.isEmpty else { return [] }
         var best: [Int: (score: Int, tone: Int)] = [:]
@@ -213,15 +245,10 @@ final class Lexicon: @unchecked Sendable {
                     guard Self.histogramGap(readingCounts, histogram[index]) <= 2 * allowed else { continue }
                     let distance = Self.boundedDistance(readingBytes, spelled[index], limit: allowed)
                     guard distance <= allowed else { continue }
-                    var mismatches = 0
-                    let tones = rows[index].tones
-                    if tones.count == reading.tones.count {
-                        for (written, expected) in zip(reading.tones, tones) where written != 0 && written != expected { mismatches += 1 }
-                    }
-                    // A word whose tones disagree with the marks that were written is a different word.
-                    guard mismatches == 0 else { continue }
+                    // The tone marks the readers saw, in order, must fit the word's tones (xuèxǐ is 血洗, never 学习).
+                    guard Self.isSubsequence(reading.tones, of: rows[index].tones) else { continue }
                     if let existing = best[index], existing.score <= distance { continue }
-                    best[index] = (distance, mismatches)
+                    best[index] = (distance, 0)
                 }
             }
         }
@@ -268,13 +295,17 @@ final class Lexicon: @unchecked Sendable {
         return b.isEmpty ? a.count : previous[b.count]
     }
 
-    /// One tone per written word (the first tone mark in it), 0 where a word has none.
-    static func writtenToneList(_ reading: String) -> [Int] {
+    /// Every tone mark written, in order (`shíjiàn` → 2, 4). Words need not be split into syllables for this.
+    static func writtenMarks(_ text: String) -> [Int] {
         let marks: [UInt32: Int] = [0x0304: 1, 0x0301: 2, 0x030C: 3, 0x0300: 4]
-        return reading.split(whereSeparator: \.isWhitespace).map { word in
-            for scalar in String(word).decomposedStringWithCanonicalMapping.unicodeScalars { if let t = marks[scalar.value] { return t } }
-            return 0
-        }
+        return text.decomposedStringWithCanonicalMapping.unicodeScalars.compactMap { marks[$0.value] }
+    }
+
+    /// Whether `marks` appear in `tones` in the same order (unmarked syllables in between are fine).
+    static func isSubsequence(_ marks: [Int], of tones: [Int]) -> Bool {
+        var i = 0
+        for tone in tones where i < marks.count && tone == marks[i] { i += 1 }
+        return i == marks.count
     }
 
     /// Lowercase ASCII letters only, with look-alike marks recognizers produce folded in (`×`→x, `√`→v, v→u, ü→u).
@@ -284,19 +315,15 @@ final class Lexicon: @unchecked Sendable {
         return String(flat.filter { $0.isASCII && $0.isLetter }).replacingOccurrences(of: "v", with: "u")
     }
 
-    /// Entries whose tones agree with every tone mark the student wrote come first; then shorter words.
+    /// Entries whose tones agree, in order, with the tone marks the student wrote come first; names, variants and
+    /// cross-references are dropped when a real word is available; then the spelling that explains more of the Pinyin,
+    /// then the more common word.
     private static func ranked(_ rows: [Row], written: [(raw: String, folded: String)]) -> [Row] {
-        let marks = writtenTones(written)
-        func agrees(_ row: Row) -> Bool {
-            guard !marks.isEmpty else { return true }
-            let tones = row.tones
-            guard tones.count >= marks.count else { return false }
-            for (offset, mark) in marks.enumerated() where mark != 0 && tones[offset] != mark { return false }
-            return true
-        }
+        let marks = writtenMarks(written.map(\.raw).joined(separator: " "))
         var seen = Set<String>()
-        let unique = rows.filter { seen.insert($0.hanzi + "|" + $0.numbered).inserted }
-        let good = unique.filter(agrees)
+        var unique = rows.filter { seen.insert($0.hanzi + "|" + $0.numbered).inserted }
+        if unique.contains(where: { !$0.isReference }) { unique = unique.filter { !$0.isReference } }
+        let good = unique.filter { marks.isEmpty || isSubsequence(marks, of: $0.tones) }
         let pool = good.isEmpty ? unique : good
         let explained = Set(written.map(\.folded)).isEmpty ? 0 : written.map(\.folded).joined().count
         return pool.enumerated().sorted { a, b in
@@ -311,20 +338,6 @@ final class Lexicon: @unchecked Sendable {
             if a.element.hanzi.count != b.element.hanzi.count { return a.element.hanzi.count < b.element.hanzi.count }
             return a.offset < b.offset
         }.map(\.element)
-    }
-
-    /// The tone (1–4) of each written syllable that has a tone mark, 0 where none is written. Only the first marked
-    /// letters of each written word are read; words are not split into syllables here, so this is approximate and is
-    /// used only to order candidates (the matcher does the exact letter-by-letter check).
-    private static func writtenTones(_ pairs: [(raw: String, folded: String)]) -> [Int] {
-        let marks: [UInt32: Int] = [0x0304: 1, 0x0301: 2, 0x030C: 3, 0x0300: 4]
-        var tones: [Int] = []
-        for pair in pairs {
-            var tone = 0
-            for scalar in pair.raw.decomposedStringWithCanonicalMapping.unicodeScalars { if let t = marks[scalar.value] { tone = t } }
-            tones.append(tone)
-        }
-        return tones.contains { $0 != 0 } ? tones : []
     }
 
     // MARK: - Pinyin spelling
@@ -378,18 +391,27 @@ final class Lexicon: @unchecked Sendable {
                 "japanese variant", "taiwan pr."].contains { g.hasPrefix($0) }
     }
 
-    /// Real senses: not classifier lists (`CL:个`), cross-references or pronunciation notes.
+    private static let pronunciationNote = try! NSRegularExpression(pattern: "\\s*\\((?:Taiwan|also|Tw) pr\\.[^)]*\\)")
+
+    /// Real senses only, as plain English: no classifier lists (`CL:个`), cross-references, pronunciation notes
+    /// (`(Taiwan pr. [han4])`), or senses that quote Hanzi or dictionary Pinyin (`used in 上聲|上声[shang3 sheng1]`),
+    /// which would otherwise be written into the student's notes.
     static func cleanSenses(_ glosses: [String]) -> [String] {
-        glosses.filter { g in
+        glosses.compactMap { raw in
+            let g = pronunciationNote.stringByReplacingMatches(in: raw, range: NSRange(raw.startIndex..., in: raw), withTemplate: "")
+                .trimmingCharacters(in: .whitespaces)
             let lower = g.lowercased()
-            return !lower.hasPrefix("cl:") && !lower.hasPrefix("see also") && !lower.hasPrefix("see ") && !lower.hasPrefix("also pr.")
-                && !lower.hasPrefix("taiwan pr.") && !lower.hasPrefix("(old)") && !g.isEmpty
+            guard !g.isEmpty, !lower.hasPrefix("cl:"), !lower.hasPrefix("see "), !lower.hasPrefix("also pr."), !lower.hasPrefix("taiwan pr."),
+                  !lower.hasPrefix("(old)"), !lower.hasPrefix("used in"), !lower.hasPrefix("abbr. for"),
+                  !g.contains("["), !g.contains("|"),
+                  !g.unicodeScalars.contains(where: { (0x3400...0x9FFF).contains($0.value) }) else { return nil }
+            return g
         }
     }
 
     static func shortGloss(_ glosses: [String]) -> String {
         let senses = cleanSenses(glosses)
-        guard let first = senses.first else { return glosses.first ?? "" }
+        guard let first = senses.first else { return "" }
         if senses.count > 1, first.count + senses[1].count < 48, !first.contains(";") { return first + "; " + senses[1] }
         return first
     }

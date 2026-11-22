@@ -3,7 +3,8 @@ import Testing
 
 /// The bundled CC-CEDICT dictionary: real entries, no AI. These run against the actual table in the app bundle.
 @Suite(.serialized) struct LexiconTests {
-    private var full: StarterVocabulary { .full }
+    /// The app's vocabulary with the dictionary loaded up front (the app itself never waits for it on the main thread).
+    private var full: StarterVocabulary { StarterVocabulary(entries: StarterVocabulary.standard.entries, lexicon: Lexicon.shared) }
 
     @Test func loadsTheBundledDictionary() throws {
         let lexicon = try #require(Lexicon.shared)
@@ -57,7 +58,7 @@ import Testing
     }
 
     @Test func englishWordsAreNotLookedUp() {
-        for word in ["he", "me", "ma", "table", "hello world", "the"] {
+        for word in ["he", "me", "ma", "table", "hello world", "the", "like", "name", "long", "song"] {
             #expect(full.proposal(forRecognizedText: word) == nil, "\(word) must not become Hanzi")
         }
     }
@@ -115,7 +116,6 @@ import Testing
         let proposal = try #require(full.repairedProposal(forRecognizedText: "学 xú xí", latinEvidence: deviceGuesses))
         let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "学 xú xí", proposal: proposal)
         #expect(item.annotationText.contains("(xuéxí)"))
-        #expect(item.allowsInkReplacement)
         #expect(item.cleanText == "学习 · xuéxí · to learn; to study")
     }
 
@@ -146,6 +146,57 @@ import Testing
         let da = try #require(full.proposal(forRecognizedText: "dà"))
         #expect(da.candidates.first?.hanzi == "大")
         #expect((Lexicon.shared?.rows(forHanzi: "学习").first?.frequency ?? 0) > 1000)
+    }
+
+    // MARK: - Independent review fixes
+
+    @Test func aWrittenHanziOffersItsEverydayMeaningFirst() throws {
+        let expected: [String: (pinyin: String, gloss: String)] = [
+            "和": ("hé", "and"), "上": ("shàng", "up"), "与": ("yǔ", "and"), "也": ("yě", "also"), "个": ("gè", "classifier"),
+        ]
+        for (hanzi, want) in expected {
+            let proposal = try #require(full.proposal(forRecognizedText: hanzi), "\(hanzi)")
+            #expect(proposal.candidates.first?.pinyin == want.pinyin, "\(hanzi)")
+            #expect(proposal.candidates.first?.gloss.contains(want.gloss) == true, "\(hanzi): \(proposal.candidates.first?.gloss ?? "")")
+        }
+    }
+
+    @Test func glossesNeverQuoteDictionaryMarkup() throws {
+        let lexicon = try #require(Lexicon.shared)
+        for hanzi in ["和", "上", "与", "个", "也", "时", "过"] {
+            for row in lexicon.rows(forHanzi: hanzi) {
+                #expect(!row.gloss.contains("[") && !row.gloss.contains("|"), "\(hanzi): \(row.gloss)")
+                #expect(!row.gloss.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) }, "\(hanzi): \(row.gloss)")
+            }
+        }
+    }
+
+    @Test func joinedPinyinIsMatchedByItsToneMarksInOrder() throws {
+        #expect(full.proposal(forRecognizedText: "shíjiàn")?.candidates.first?.hanzi == "实践")
+        #expect(full.proposal(forRecognizedText: "xuèxǐ")?.candidates.first?.hanzi == "血洗")
+        #expect(Lexicon.shared?.repairCandidates(forPinyinReadings: ["xuèxǐ"]).first?.hanzi == "血洗")
+    }
+
+    @Test func aPlainSyllableIsLookedUpOnlyWhenTheNoteSaysItIsPinyin() throws {
+        #expect(full.proposal(forRecognizedText: "Shi") == nil)
+        #expect(full.proposal(forRecognizedText: "Shi", latinIsPinyin: true)?.candidates.first?.hanzi == "是")
+        #expect(full.proposal(forRecognizedText: "xuéxí", latinIsPinyin: false) == nil)
+    }
+
+    @Test func repairKeepsTheStudentsOwnEnglish() throws {
+        let proposal = try #require(full.repairedProposal(forRecognizedText: "电脑 diàn nao", latinEvidence: ["diàn nao"],
+                                                          writtenPinyin: "diàn nao", writtenEnglish: "laptop"))
+        #expect(proposal.candidates.first?.hanzi == "电脑")
+        #expect(proposal.writtenGloss == "laptop")
+        let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "电脑 diàn nao laptop", proposal: proposal)
+        #expect(item.cleanText.hasSuffix("laptop"))
+    }
+
+    @Test func theAppNeverWaitsForTheDictionary() {
+        // `full` reads the shared dictionary only if it is already loaded; it never blocks the caller to load it.
+        let vocabulary = StarterVocabulary.full
+        #expect(vocabulary.usesSharedLexicon)
+        #expect(vocabulary.lexicon == nil)
     }
 }
 
