@@ -185,6 +185,26 @@ struct InlineReplacementTests {
         #expect(below.maxX <= 820)
     }
 
+    @Test(arguments: [(120.0, 300.0), (300.0, 120.0)])
+    func stackedNotesAreCompletedWhereTheyStand(hanziBaseline: Double, pinyinBaseline: Double) async throws {
+        let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
+        let (page, ink, parts) = try page([Piece(text: "好", x: 100, em: 90, kind: .hanzi, baseline: hanziBaseline),
+                                           Piece(text: "hao xiang", x: 100, em: 46, kind: .pinyin, baseline: pinyinBaseline)],
+                                          read: note("好", "hao xiang", nil), folder: dir)
+        let item = try await suggest(page)
+        #expect(page.replaceSuggestion(item.id, with: item.cleanText, pageWidth: 1180))
+        Preview.write(page.drawing, name: hanziBaseline < pinyinBaseline ? "synthetic-stacked-below" : "synthetic-stacked-above")
+        #expect(page.latestVisibleReplacement?.replacement?.isInline == true)
+        #expect(Array(ids(page.drawing).prefix(ink.strokes.count)) == ids(ink))
+        let hao = InlineReplacement.pathBounds(parts[.hanzi]!), pinyin = InlineReplacement.pathBounds(parts[.pinyin]!)
+        let boxes = added(page, since: ink).map { InlineReplacement.pathBounds([$0]) }
+        #expect(boxes.contains { $0.minX >= hao.maxX && $0.midY > hao.minY && $0.midY < hao.maxY }, "像 beside 好")
+        #expect(boxes.filter { $0.maxY < pinyin.midY && $0.maxY > pinyin.minY - 30 && $0.midX > pinyin.minX && $0.midX < pinyin.maxX }.count >= 2, "tone marks")
+        #expect(boxes.contains { $0.minX > pinyin.maxX && $0.midY > pinyin.minY - 10 && $0.midY < pinyin.maxY + 10 }, "English on the Pinyin's line")
+        #expect(page.restoreOriginal(try #require(page.latestVisibleReplacement).id))
+        #expect(ids(page.drawing) == ids(ink))
+    }
+
     @Test func writingInTheWayIsNeverCovered() async throws {
         let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
         let blocker = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 620, y: 150), glyphSize: 90)
