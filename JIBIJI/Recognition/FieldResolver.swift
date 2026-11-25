@@ -143,9 +143,24 @@ enum FieldResolver {
             let parsed = parse(reading, vocabulary: vocabulary, contextHanzi: entry.hanzi?.text)
             return parsed.placedPinyin ? parsed.english.map { FieldValidation.letters(FieldValidation.words($0)) } : nil
         }.filter { !$0.isEmpty })
+        let beginning = entry.pinyin == nil ? pinyinBeginning(in: evidence, hanzi: entry.hanzi?.text) : nil
         for reading in evidence {
             if reading.alternate { note("Alternate reading: “\(reading.text)” (\(reading.engine.rawValue))"); continue }
             var parsed = parse(reading, vocabulary: vocabulary, contextHanzi: entry.hanzi?.text)
+            if let beginning, !reading.partial, !parsed.placedPinyin, let whole = parsed.english {
+                let words = FieldValidation.words(whole)
+                let count = (1...max(1, words.count)).first { n in
+                    n <= words.count && StarterVocabulary.editDistance(FieldValidation.letters(Array(words[..<n])), beginning.letters) <= 1
+                } ?? (beginning.alone && words.count <= beginning.words ? words.count : nil)
+                if let count {
+                    // Another engine's `open` for the same ink goes with it: when the Pinyin is all that was written, no
+                    // reading of that ink is English.
+                    note("Misread Pinyin, not English: “\(words[..<count].joined(separator: " "))” (\(reading.source))")
+                    pinyinSeen = true
+                    parsed.english = count < words.count ? words[count...].joined(separator: " ") : nil
+                    if parsed.english == nil { misfiled = true }
+                }
+            }
             if reading.field == nil, !reading.partial, !parsed.placedPinyin, let whole = parsed.english,
                let cut = englishSuffix(of: whole, matching: tails) {
                 note("Misread Pinyin before the English: “\(whole)” (\(reading.source))")
@@ -261,6 +276,34 @@ enum FieldResolver {
         var placedPinyin = false
     }
 
+    /// The start of the Hanzi's reading, in whole syllables, that some engine spelled (`dian` beside 电脑, even as a lower
+    /// guess) and that at least two engines' readings of the ink begin with, give or take one letter (`dean`). Only where it
+    /// ends is used; it never becomes the Pinyin's value. `alone` is true when nothing follows it in any of those readings.
+    private static func pinyinBeginning(in evidence: [NoteEvidence.Reading], hanzi: String?) -> (letters: String, words: Int, alone: Bool)? {
+        guard let hanzi, !hanzi.isEmpty else { return nil }
+        let target = ReadingCrossCheck.romanization(of: hanzi)
+        let readings = evidence.filter { !$0.partial && $0.engine != .other && $0.field != .hanzi }
+            .map { (engine: $0.engine, alternate: $0.alternate, words: FieldValidation.words(latinPart($0.text))) }.filter { !$0.words.isEmpty }
+        var best: (letters: String, words: Int, alone: Bool)?
+        for reading in readings {
+            for count in 1...min(4, reading.words.count) {
+                let lead = Array(reading.words[..<count])
+                let letters = FieldValidation.letters(lead)
+                guard letters.count >= 3, letters.count > (best?.letters.count ?? 0), target.hasPrefix(letters),
+                      letters == target || NoteGrouping.isSyllable(String(target.dropFirst(letters.count))),
+                      PinyinValidator.analyze(words: lead).isValid else { continue }
+                let near = readings.filter { other in
+                    (1...other.words.count).contains {
+                        StarterVocabulary.editDistance(FieldValidation.letters(Array(other.words[..<$0])), letters) <= 1
+                    }
+                }
+                guard Set(near.filter { !$0.alternate }.map(\.engine)).count >= 2 else { continue }
+                best = (letters, count, near.allSatisfy { FieldValidation.letters($0.words).count <= letters.count + 1 })
+            }
+        }
+        return best
+    }
+
     /// The last words of `text` that are another engine's English within a third of its letters, when that fits better than
     /// the whole text does. Nil when nothing needs cutting.
     private static func englishSuffix(of text: String, matching tails: Set<String>) -> String? {
@@ -303,7 +346,7 @@ enum FieldResolver {
             // A reading of the English field that is really Pinyin is not English.
             result.english = words.joined(separator: " ")
         case nil:
-            // The leading words that spell the note's Hanzi within a few letters (`none fu she ji` for 农夫市集) are its Pinyin,
+            // The leading words that spell the note's Hanzi within a few letters (`none fu shi ji` for 农夫市集) are its Pinyin,
             // however garbled; the rest is English. Validation of that Pinyin happens later, as for any other reading.
             if let anchor = result.hanzi ?? contextHanzi {
                 let targets = [ReadingCrossCheck.romanization(of: anchor)]

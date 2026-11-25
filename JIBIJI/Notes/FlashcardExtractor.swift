@@ -34,8 +34,8 @@ enum FlashcardExtractor {
 
     /// The shared path for a recognized note: special card kinds are decided from its clean text, and an ordinary
     /// term card is built from the validated fields, so Pinyin is never filed as English and English is never invented.
-    /// `lexicon`, when given, supplies dictionary tones for a term the starter list does not know (农夫市集 nong fu shi ji →
-    /// nóngfū shìjí, from 农夫 + 市集). Such a card is still flagged for review.
+    /// `lexicon`, when given, supplies dictionary tones for a term the starter list does not know (电脑学习 dian nao xue xi →
+    /// diànnǎo xuéxí, from 电脑 + 学习). Such a card is still flagged for review.
     static func extract(from line: RecognizedLine, vocabulary: StarterVocabulary = .standard, lexicon: Lexicon? = nil) -> FlashcardDraft? {
         guard let resolved = line.resolved else { return extract(from: line.text, vocabulary: vocabulary) }
         let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -65,11 +65,11 @@ enum FlashcardExtractor {
         if let entry {
             // No Pinyin written beside English: the card still shows the known reading.
             if pinyin == nil, resolved.pinyin.status == .absent { pinyin = entry.pinyin }
-            // A few letters off the word's reading, or unreadable while the readers came that close: the readers' mistake.
+            // A few letters off the word's reading, cut short of it, or unreadable while the readers came that close: the readers' mistake.
             let target = Lexicon.foldedLetters(entry.pinyin)
             let close = { (text: String) in StarterVocabulary.leadingRun(of: FieldValidation.words(text), near: target) != nil }
-            if pinyin.map({ Lexicon.foldedLetters($0) != target && close($0) })
-                ?? (resolved.pinyin.status == .unresolved && resolved.latinEvidence.contains(where: close)) {
+            if pinyin.map({ Lexicon.foldedLetters($0) != target && (close($0) || Lexicon.isBeginning($0, of: entry.pinyin)) })
+                ?? (resolved.pinyin.status == .unresolved && resolved.latinEvidence.contains { close($0) || Lexicon.isBeginning($0, of: entry.pinyin) }) {
                 pinyin = entry.pinyin
                 review = true
             }
@@ -87,10 +87,16 @@ enum FlashcardExtractor {
             if written.contains("?") || written.contains("？") { review = true }
             back = pinyin.map { "\($0) — \(written)" } ?? written
         } else {
-            // No English was written: only a real vocabulary entry can supply one. Otherwise no card.
-            guard let entry else { return nil }
-            gloss = entry.glosses[0]
-            back = "\(pinyin ?? entry.pinyin) — \(entry.glosses[0])"
+            // No English was written: only a real vocabulary or dictionary entry can supply one. Otherwise no card.
+            if let entry {
+                gloss = entry.glosses[0]
+                back = "\(pinyin ?? entry.pinyin) — \(entry.glosses[0])"
+            } else if let pinyin, let meaning = lexicon?.gloss(of: hanzi, pinyin: pinyin) {
+                gloss = meaning
+                back = "\(pinyin) — \(meaning)"
+            } else {
+                return nil
+            }
         }
         return FlashcardDraft(front: hanzi, back: back, kind: .vocabulary, sourceText: line.rawText, needsReview: review)
     }

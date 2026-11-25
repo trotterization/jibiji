@@ -130,7 +130,7 @@ struct StarterVocabulary: Sendable {
     }
 
     /// The leading words of `words` whose letters come closest to `reading` (toneless letters of a word's Pinyin, such as
-    /// `nongfushiji`), when they are within a quarter of its letters: `none fu she ji farmers market` → 4 words, 2 letters
+    /// `nongfushiji`), when they are within a quarter of its letters: `none fu shi ji farmers market` → 4 words, 1 letter
     /// off. Readings shorter than five letters are never matched this way: too many English words sit that close.
     static func leadingRun(of words: [String], near reading: String) -> (count: Int, distance: Int)? {
         guard reading.count >= 5, !words.isEmpty else { return nil }

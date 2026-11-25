@@ -389,6 +389,18 @@ final class PageFlashcardTests: XCTestCase {
         XCTAssertTrue(other.cards.filter { $0.correction != nil }.isEmpty)
     }
 
+    func testReplacingTheSameInkTwiceMakesOneCleanCard() async throws {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: FakeReader(result: []))
+        let drawing = inkDrawing()
+        let notes = (0..<2).map { _ -> AcceptedAnnotation in
+            var n = note("负责 · fùzé · in charge", gloss: "in charge")
+            n.replacement = InkReplacement(originalInk: Data(), originalIndices: [0], replacementStrokeIDs: Set(drawing.strokes.map(InkSelection.identity)))
+            return n
+        }
+        model.merge(lines: [], digest: "d", corrections: notes)
+        XCTAssertEqual(model.cards.map(\.back), ["fùzé — in charge"])
+    }
+
     func testAcceptingANoteAgainBringsBackAnIdenticalCardThatWasDiscarded() async throws {
         let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: reader())
         let kept = note("负责 · in charge", gloss: "in charge")

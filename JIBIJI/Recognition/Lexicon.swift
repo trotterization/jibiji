@@ -157,6 +157,24 @@ final class Lexicon: @unchecked Sendable {
         case misread
     }
 
+    /// Whether `written` is the first whole syllables of `pinyin` with the rest left off (`dian` of `diànnǎo`), and no tone
+    /// mark in it disagrees.
+    static func isBeginning(_ written: String, of pinyin: String) -> Bool {
+        let letters = foldedLetters(written), target = foldedLetters(pinyin)
+        return letters.count >= 2 && letters.count < target.count && target.hasPrefix(letters)
+            && PinyinValidator.analyze(words: FieldValidation.words(written)).isValid
+            && NoteGrouping.isSyllable(String(target.dropFirst(letters.count)))
+            && zip(markedLetters(written), markedLetters(pinyin)).allSatisfy { $0 == nil || $0 == $1 }
+    }
+
+    /// The tone mark on each letter, nil where there is none, so marks are compared where they stand and not just in order.
+    private static func markedLetters(_ text: String) -> [Int?] {
+        text.precomposedStringWithCanonicalMapping.flatMap { character -> [Int?] in
+            let letters = foldedLetters(String(character)).count
+            return letters == 0 ? [] : [writtenMarks(String(character)).first] + Array(repeating: nil, count: letters - 1)
+        }
+    }
+
     /// The dictionary's reading of a note's Hanzi, and how the note's Pinyin compares. Suggest and cards both use this, so
     /// they cannot disagree. Nil when the dictionary has no reading, or what was written is not close to it.
     /// `complete` is false when some word's tone could not be decided.
@@ -168,10 +186,16 @@ final class Lexicon: @unchecked Sendable {
         func close(_ text: String) -> Bool { StarterVocabulary.leadingRun(of: FieldValidation.words(text), near: target) != nil }
         if let written {
             if Lexicon.foldedLetters(written) == target { return (known.pinyin, known.complete, .tonesDiffer) }
-            return close(written) ? (known.pinyin, known.complete, .misread) : nil
+            return close(written) || Lexicon.isBeginning(written, of: known.pinyin) ? (known.pinyin, known.complete, .misread) : nil
         }
         if note.pinyin.status == .absent { return (known.pinyin, known.complete, .notWritten) }
-        return note.latinEvidence.contains(where: close) ? (known.pinyin, known.complete, .misread) : nil
+        return note.latinEvidence.contains(where: { close($0) || Lexicon.isBeginning($0, of: known.pinyin) }) ? (known.pinyin, known.complete, .misread) : nil
+    }
+
+    /// The dictionary's short meaning of a whole word with this reading; nil for names, variants and unlisted phrases.
+    func gloss(of hanzi: String, pinyin: String) -> String? {
+        let key = { (text: String) in text.precomposedStringWithCanonicalMapping.lowercased().filter { !$0.isWhitespace } }
+        return rows(forHanzi: hanzi).first { !$0.isReference && key($0.pinyin) == key(pinyin) && !$0.gloss.isEmpty }?.gloss
     }
 
     private func phraseReading(_ hanzi: String, written: String?) -> (pinyin: String, complete: Bool)? {

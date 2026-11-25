@@ -181,7 +181,7 @@ enum NoteGrouping {
                 }
             }
             // Pinyin and English written as one run (`nong fu shi ji farmers market`) with the Pinyin misread as English
-            // words (`none fu she ji`): the leading words that spell the Hanzi's reading, within a few letters, are the
+            // words (`none fu shi ji`): the leading words that spell the Hanzi's reading, within a few letters, are the
             // Pinyin, and the rest stays English.
             let words = english.split(separator: " ").map(String.init)
             if !near, let lead = ([rom] + vocab).compactMap({ StarterVocabulary.leadingRun(of: words, near: $0) }).min(by: { $0.distance < $1.distance }) {

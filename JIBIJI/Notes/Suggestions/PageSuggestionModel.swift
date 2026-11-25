@@ -185,7 +185,7 @@ extension PencilInkLineReader {
         }
         if malformed(first.text), let better = ordered.first(where: { validPinyin($0.text) }) { return better.text }
         // Plain Pinyin read alike by two other engines (`nong fu shi ji`) outvotes one engine's reading of the same ink that
-        // is not Pinyin at all (`none fu she ji`). Otherwise that misreading files the Pinyin as English and the note splits.
+        // is not Pinyin at all (`none fu shi ji`). Otherwise that misreading files the Pinyin as English and the note splits.
         func syllables(_ text: String) -> Bool {
             let words = FieldValidation.words(text).filter { $0.contains(where: \.isLetter) }
             return StarterVocabulary.hanzi(in: text).isEmpty && !words.isEmpty
@@ -226,7 +226,7 @@ struct PendingSuggestion: Identifiable, Equatable {
     var replacementText: String {
         guard !candidate.pinyin.isEmpty || !candidate.gloss.isEmpty else { return candidate.hanzi }
         // Replace writes the dictionary word, so its Pinyin is always the word's own tone-marked reading. Pinyin as the
-        // readers resolved it (`nong fo shi ji`: untoned, misspelled or misread) never reaches the page. Any difference
+        // readers resolved it (`nang fu shi ji`: untoned, misspelled or misread) never reaches the page. Any difference
         // from what was written is shown in the caveat, and Restore brings the student's ink back.
         let pinyin = candidate.pinyin
         let gloss = selectedIndex == 0 ? proposal.writtenGloss ?? candidate.gloss : candidate.gloss

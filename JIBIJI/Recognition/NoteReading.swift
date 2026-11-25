@@ -38,7 +38,7 @@ enum NoteReading {
         // Short Pinyin is hard to read from a tiny crop of one syllable (`xué` alone) and easy to read inside its line.
         // Read each multi-cell row as one line first; when its words line up with the row's cells, each cell gets the
         // word read in context. The cell's own reading stays as evidence beside it.
-        var wordForCell: [[Int]: NoteEvidence.Reading] = [:]
+        var rowReads: [(cells: [NoteLayout.CellCandidate], readings: [NoteEvidence.Reading])] = []
         if let readRegion {
             for row in rows {
                 try Task.checkCancellation()
@@ -49,27 +49,35 @@ enum NoteReading {
                 #if DEBUG
                 DebugTrace.log("row read cells=\(rowCells.count): " + ordered.map { "\($0.engine.rawValue)=\($0.text.replacingOccurrences(of: "\n", with: "|"))" }.joined(separator: " ; "))
                 #endif
-                for reading in ordered {
-                    let words = rowWords(in: reading.text)
-                    guard words.count == rowCells.count else { continue }
-                    for (cell, word) in zip(rowCells, words) { wordForCell[cell.strokeIndices] = .init(text: word, engine: reading.engine, scope: .cell) }
-                    break
-                }
+                rowReads.append((rowCells, ordered))
+            }
+        }
+        var ownReads: [[Int]: CellRead] = [:]
+        for cell in cells {
+            try Task.checkCancellation()
+            ownReads[cell.strokeIndices] = try await readCell(cell.strokeIndices.map { drawing.strokes[$0] }, cell)
+        }
+        // Every word of the row must be the kind of writing (Hanzi or Latin) at least one reader saw in its cell. One that
+        // is not means the row was miscounted (two Hanzi cells read as one word, say) and every word after it has shifted,
+        // so none of that reading's words are used.
+        var wordForCell: [[Int]: NoteEvidence.Reading] = [:]
+        for row in rowReads {
+            for reading in row.readings {
+                let words = rowWords(in: reading.text)
+                guard words.count == row.cells.count, zip(row.cells, words).allSatisfy({ cell, word in
+                    guard let own = ownReads[cell.strokeIndices] else { return true }
+                    let seen = [own.text] + own.readings + own.evidence.map(\.text)
+                    return seen.contains { !$0.isEmpty && containsHanzi($0) == FieldValidation.isHanzi(word) }
+                }) else { continue }
+                for (cell, word) in zip(row.cells, words) { wordForCell[cell.strokeIndices] = .init(text: word, engine: reading.engine, scope: .cell) }
+                break
             }
         }
         var reads: [[Int]: CellRead] = [:]
         var readings: [NoteGrouping.Reading] = []
         for cell in cells {
-            try Task.checkCancellation()
-            let strokes = cell.strokeIndices.map { drawing.strokes[$0] }
-            var read = try await readCell(strokes, cell)
-            // The row word must be the kind of writing (Hanzi or Latin) at least one reader saw in this cell, so a miscounted
-            // row never puts Pinyin into a cell every reader read as Hanzi (or the reverse).
-            if let word = wordForCell[cell.strokeIndices], isUsableRowWord(word.text),
-               read.map({ own in
-                   let seen = [own.text] + own.readings + own.evidence.map(\.text)
-                   return seen.contains { !$0.isEmpty && containsHanzi($0) == FieldValidation.isHanzi(word.text) }
-               }) ?? true {
+            var read = ownReads[cell.strokeIndices]
+            if let word = wordForCell[cell.strokeIndices], isUsableRowWord(word.text) {
                 var evidence = read?.evidence ?? []
                 if evidence.isEmpty, let own = read { evidence = [.init(text: own.text, engine: .other, scope: .cell)] }
                 #if DEBUG

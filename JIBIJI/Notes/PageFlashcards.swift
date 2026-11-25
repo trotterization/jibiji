@@ -194,6 +194,12 @@ final class PageFlashcards {
                vocabulary: StarterVocabulary = .standard, drawing: PKDrawing? = nil) -> Int {
         // A replacement is already confirmed text. Don't ask a stroke recognizer
         // to reinterpret the glyph-fill paths and override what the student approved.
+        // Replacing, restoring and replacing again leaves two notes for the same ink; only the newest one speaks for it.
+        let corrections = corrections.enumerated().filter { index, note in
+            note.replacement == nil || !corrections[(index + 1)...].contains {
+                $0.replacement != nil && $0.text == note.text && $0.anchor == note.anchor
+            }
+        }.map(\.element)
         let replacements = corrections.filter { $0.replacement != nil }
         let lines = RecognitionCrossCheck.resolve(lines, vocabulary: vocabulary).filter { line in
             !replacements.contains { note in
