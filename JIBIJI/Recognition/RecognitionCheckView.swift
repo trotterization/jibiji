@@ -31,6 +31,7 @@ struct RecognitionCheckView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Build") { Text(BuildStamp.summary).font(.footnote.monospaced()).textSelection(.enabled) }
                 Section("PaddleOCR v6 · on-device preview") {
                     if PaddleTextPipeline.isInstalled {
                         Button(paddleRunning ? "Comparing…" : "Compare v6 reading") {

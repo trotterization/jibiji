@@ -55,12 +55,16 @@ struct NoteReadingTests {
         #expect(!a.bounds.intersects(b.bounds))
     }
 
-    @Test func alternativeReadingsOfOneFieldBecomeWholeNoteAlternatives() async throws {
+    @Test func conflictingHanziReadingsAreResolvedByThePinyinAndNeverOfferedAsAlternatives() async throws {
         let page = Page()
         let pieces = pieces(page, hanziA: "负贵", hanziAReadings: ["负贵", "负责"])
         let lines = try await NoteReading.lines(in: page.all) { strokes, _ in cellRead(for: strokes, pieces: pieces) }
-        let a = try #require(lines.first { $0.text.hasPrefix("负贵") })
-        #expect(a.readings.contains("负责 fùzé to be responsible for"))
+        let a = try #require(lines.first { $0.text.hasPrefix("负责") })
+        // The reading that fits the written Pinyin is used, tentatively; the other is only a diagnostic.
+        #expect(a.resolved?.hanzi.status == .tentative)
+        #expect(a.resolved?.diagnostics.contains { $0.contains("负贵") } == true)
+        #expect(a.readings.isEmpty)
+        #expect(a.inkEditSuppressed)
         // A note whose cell was read the same everywhere has no alternatives.
         #expect(lines.first { $0.text.hasPrefix("复习") }?.readings.isEmpty == true)
     }
@@ -121,14 +125,14 @@ struct NoteReadingTests {
         #expect(crossChecked.inkEditSuppressed)
     }
 
-    @Test func refinedCellKeepsItsRawReadingForTheWholeNote() async throws {
+    @Test func aRefinedCellKeepsItsRawReadingAsADiagnostic() async throws {
         let page = Page()
         var pieces = pieces(page)
         pieces[1].raw = "负贵"
         let lines = try await NoteReading.lines(in: page.all) { strokes, _ in cellRead(for: strokes, pieces: pieces) }
         let a = try #require(lines.first { $0.text.hasPrefix("负责") })
-        #expect(a.sourceText == "负贵 fùzé to be responsible for")
-        #expect(a.rawText == "负贵 fùzé to be responsible for")
+        #expect(a.resolved?.diagnostics.contains { $0.contains("负贵") } == true)
+        #expect(a.sourceText == nil)
     }
 
     @Test func unreadCellsAndEmptyPagesAreHandledQuietly() async throws {

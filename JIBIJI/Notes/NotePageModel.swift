@@ -63,13 +63,16 @@ final class NotePageModel {
         self.suggestions = PageSuggestionModel(
             pageID: pageID,
             store: SuggestionStore(directory: store.directory),
-            reader: suggestionReader
+            reader: suggestionReader,
+            // The app consults the offline CC-CEDICT dictionary; tests that inject a reader keep the small starter list.
+            vocabulary: lineReader == nil ? .full : .standard
         )
         self.flashcards = PageFlashcards(
             pageID: pageID,
             store: store,
             reader: lineReader ?? PencilInkLineReader(mode: .primaryOnly)
         )
+        flashcards.usesDictionary = lineReader == nil
         self.store = store
         self.autosaveDelay = autosaveDelay
         let opened = Self.open(pageID: pageID, from: store)
@@ -115,7 +118,7 @@ final class NotePageModel {
     @discardableResult
     func replaceSuggestion(_ id: UUID, with text: String) -> Bool {
         guard isEditable, let item = suggestions.pending.first(where: { $0.id == id }) else { return false }
-        // An uncertain reading (tone or spelling mismatch) may be the recognizer's mistake: never edit ink for it.
+        // Replace is the student's call; an uncertain reading shows its caveat on the chip and Restore undoes it.
         guard item.allowsInkReplacement else {
             notice = "This reading is uncertain, so your handwriting was not changed. You can add it as a note instead."
             return false
@@ -128,8 +131,10 @@ final class NotePageModel {
         }
         let originals = indices.map { drawing.strokes[$0] }
         let sourceBounds = originals.dropFirst().reduce(originals[0].renderBounds) { $0.union($1.renderBounds) }
+        // Written at the height of the student's handwriting and allowed to run to the right (up to about a page width),
+        // so `是 · shì · to be` replacing a short `shì` is not shrunk into that word's box. − and + still resize it.
         guard let replacement = CleanHandwriting.drawing(text: cleanText, in: sourceBounds,
-                                                        pen: .matching(originals)) else {
+                                                        pen: .matching(originals), maxWidth: 640) else {
             notice = "This replacement couldn't be drawn. Your writing is unchanged."
             return false
         }
@@ -142,7 +147,7 @@ final class NotePageModel {
         var updated = drawing.strokes.enumerated().filter { !removed.contains($0.offset) }.map(\.element)
         updated.insert(contentsOf: replacement.strokes, at: min(indices[0], updated.count))
         drawingDidChange(PKDrawing(strokes: updated))
-        suggestions.keepUnchangedPending(remaining, excluding: sourceBounds)
+        suggestions.keepUnchangedPending(remaining, excluding: sourceBounds.union(replacement.bounds))
         saveIfNeeded()
         return true
     }

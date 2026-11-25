@@ -37,7 +37,9 @@ enum CleanHandwriting {
         drawing(text: text, in: target, pen: Pen(color: color))
     }
 
-    static func drawing(text: String, in target: CGRect, pen: Pen) -> PKDrawing? {
+    /// `maxWidth` nil: the text is fitted inside `target`. Otherwise it is written at `target`'s height, starting at its
+    /// left edge and growing to the right as far as `maxWidth`, so a long replacement is not shrunk into a short word's box.
+    static func drawing(text: String, in target: CGRect, pen: Pen, maxWidth: CGFloat? = nil) -> PKDrawing? {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 200, !text.contains("\n"), !text.contains("\r"),
               target.width > 1, target.height > 1,
               [target.minX, target.minY, target.width, target.height].allSatisfy(\.isFinite) else { return nil }
@@ -63,7 +65,8 @@ enum CleanHandwriting {
         guard let first = paths.first else { return nil }
         let bounds = paths.dropFirst().reduce(first.boundingBoxOfPath) { $0.union($1.boundingBoxOfPath) }
         guard bounds.width > 0, bounds.height > 0 else { return nil }
-        let scale = min(target.width / bounds.width, target.height / bounds.height)
+        let scale = maxWidth.map { min(target.height / bounds.height, max($0, target.width) / bounds.width) }
+            ?? min(target.width / bounds.width, target.height / bounds.height)
         var transform = CGAffineTransform(a: scale, b: 0, c: 0, d: -scale,
                                          tx: target.minX - bounds.minX * scale,
                                          ty: target.minY + bounds.maxY * scale)

@@ -156,7 +156,7 @@ struct ReadingCrossCheckTests {
         let proposal = StarterVocabulary.standard.proposal(forRecognizedText: "农夫市集")!
         let pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: line.text, proposal: proposal,
                                         readingNote: line.reviewNote, inkEditSuppressed: line.inkEditSuppressed)
-        #expect(!pending.allowsInkReplacement)
+        #expect(pending.uncertaintyNote != nil)
         #expect(pending.uncertaintyNote?.contains("Pinyin corrected") == true)
     }
 }

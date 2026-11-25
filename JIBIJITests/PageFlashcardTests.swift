@@ -349,4 +349,71 @@ final class PageFlashcardTests: XCTestCase {
         XCTAssertTrue(model.cards[0].needsReview)
         XCTAssertEqual(model.cards[0].status, .draft)
     }
+
+    // MARK: - Cards from accepted notes
+
+    /// A reader that never finishes: whatever exists before it returns was made without reading the ink.
+    private struct NeverReader: InkLineReader {
+        func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
+            try await Task.sleep(for: .seconds(600))
+            return []
+        }
+    }
+
+    /// A kept note that records its exact source strokes, as the app's notes do.
+    private func keptNote(on drawing: PKDrawing) -> AcceptedAnnotation {
+        var n = note("负责 · in charge", gloss: "in charge")
+        n.sourceStrokeIDs = drawing.strokes.map(InkSelection.identity)
+        return n
+    }
+
+    func testAnAcceptedNoteMakesItsCardAtOnceWithoutReadingTheInk() throws {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: NeverReader())
+        let drawing = inkDrawing()
+        let task = model.refresh(from: drawing, annotations: [keptNote(on: drawing)])
+        defer { task.cancel() }
+        XCTAssertEqual(model.cards.map(\.back), ["fùzé — in charge"])
+        XCTAssertEqual(model.status, .reading, "the rest of the page is still being read")
+    }
+
+    func testAnAcceptedNoteMakesItsCardEvenWhenThisReadSpellsTheLineDifferently() async throws {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: reader("fu zc to bc responsible"))
+        let drawing = inkDrawing()
+        await generate(model, drawing: drawing, notes: [keptNote(on: drawing)])
+        XCTAssertEqual(model.cards.map(\.back), ["fùzé — in charge"])
+        XCTAssertEqual(model.cards.first?.status, .draft)
+        XCTAssertEqual(model.cards.first?.needsReview, false)
+        // Its source ink changed: no card from the note.
+        let other = PageFlashcards(pageID: "page-2", store: makeStore(), reader: reader("fu zc to bc responsible"))
+        await generate(other, drawing: inkDrawing(at: 300), notes: [keptNote(on: drawing)])
+        XCTAssertTrue(other.cards.filter { $0.correction != nil }.isEmpty)
+    }
+
+    func testReplacingTheSameInkTwiceMakesOneCleanCard() async throws {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: FakeReader(result: []))
+        let drawing = inkDrawing()
+        let notes = (0..<2).map { _ -> AcceptedAnnotation in
+            var n = note("负责 · fùzé · in charge", gloss: "in charge")
+            n.replacement = InkReplacement(originalInk: Data(), originalIndices: [0], replacementStrokeIDs: Set(drawing.strokes.map(InkSelection.identity)))
+            return n
+        }
+        model.merge(lines: [], digest: "d", corrections: notes)
+        XCTAssertEqual(model.cards.map(\.back), ["fùzé — in charge"])
+    }
+
+    func testAcceptingANoteAgainBringsBackAnIdenticalCardThatWasDiscarded() async throws {
+        let model = PageFlashcards(pageID: "page-1", store: makeStore(), reader: reader())
+        let kept = note("负责 · in charge", gloss: "in charge")
+        await generate(model, drawing: inkDrawing(), notes: [kept])
+        let first = try XCTUnwrap(model.cards.first)
+        model.discard(first.id)
+        // The same note, still on the page, does not bring back a card the student discarded.
+        await generate(model, drawing: inkDrawing(), notes: [kept])
+        XCTAssertEqual(model.cards.map(\.status), [.discarded])
+        // A newly accepted note with the same content is a new request for that card.
+        await generate(model, drawing: inkDrawing(), notes: [note("负责 · in charge", gloss: "in charge")])
+        XCTAssertEqual(model.cards.count, 1)
+        XCTAssertEqual(model.cards[0].status, .draft)
+        XCTAssertEqual(model.cards[0].back, "fùzé — in charge")
+    }
 }

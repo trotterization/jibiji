@@ -67,7 +67,7 @@ struct SuggestionStage1Tests {
         let hanziInk = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 80, y: 160))
         let pinyinInk = SyntheticInk.drawing(writing: "人", origin: CGPoint(x: 500, y: 160))
         let reader = RegionReader(regions: [
-            .init(bounds: hanziInk.bounds, text: "大", readings: ["大", "牛"]),
+            .init(bounds: hanziInk.bounds, text: "复习"),
             .init(bounds: pinyinInk.bounds, text: pinyinText),
         ], writing: [hanziInk, pinyinInk], noise: noise)
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
@@ -89,7 +89,7 @@ struct SuggestionStage1Tests {
         let f = fixture(folder: folder, noise: noise)
         await suggest(f.page)
         #expect(f.page.suggestions.pending.count == 2)
-        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "大" })
+        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "复习" })
         #expect(f.page.replaceSuggestion(item.id, with: "牛"))
         let note = try #require(f.page.latestVisibleReplacement)
         let generated = try #require(note.replacement?.replacementStrokeIDs)
@@ -119,7 +119,7 @@ struct SuggestionStage1Tests {
         let noise = RegionReader.Region(bounds: .zero, text: "fùzé responsible for?")
         let f = fixture(folder: folder, noise: noise, pinyinText: "hello world")
         await suggest(f.page)
-        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "大" })
+        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "复习" })
         #expect(f.page.replaceSuggestion(item.id, with: "牛"))
         await suggest(f.page)
         #expect(f.page.suggestions.pending.isEmpty)
@@ -129,7 +129,7 @@ struct SuggestionStage1Tests {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let f = fixture(folder: folder)
         await suggest(f.page)
-        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "大" })
+        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "复习" })
         #expect(f.page.replaceSuggestion(item.id, with: "牛"))
         await suggest(f.page)
         let remaining = try #require(f.page.suggestions.pending.first)
@@ -149,7 +149,7 @@ struct SuggestionStage1Tests {
     @Test func aPageWithOnlyAcceptedReplacementsDoesNotCallTheRecognizer() async throws {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let ink = SyntheticInk.drawing(writing: "大")
-        let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "大", readings: ["大", "牛"])], writing: [ink])
+        let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "复习")], writing: [ink])
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
         page.drawingDidChange(ink)
         await suggest(page)
@@ -166,7 +166,7 @@ struct SuggestionStage1Tests {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let f = fixture(folder: folder, noise: .init(bounds: .zero, text: "x7大 a3b9", readings: ["x7大 a3b9"]))
         await suggest(f.page)
-        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "大" })
+        let item = try #require(f.page.suggestions.pending.first { $0.recognizedText == "复习" })
         #expect(f.page.replaceSuggestion(item.id, with: "牛"))
         let note = try #require(f.page.latestVisibleReplacement)
         #expect(f.page.adjustReplacement(note.id, by: CGAffineTransform(translationX: 25, y: 10)))
@@ -189,11 +189,11 @@ struct SuggestionStage1Tests {
         #expect(accepted.sourceStrokeIDs == f.pinyinInk.strokes.map(InkSelection.identity).sorted())
         // A different (but still matching) reading of the very same strokes must not re-offer it.
         f.reader.setRegions([
-            .init(bounds: f.hanziInk.bounds, text: "大", readings: ["大", "牛"]),
+            .init(bounds: f.hanziInk.bounds, text: "复习"),
             .init(bounds: f.pinyinInk.bounds, text: "fuze responsible for"),
         ])
         await suggest(f.page)
-        #expect(f.page.suggestions.pending.map(\.recognizedText) == ["大"])
+        #expect(f.page.suggestions.pending.map(\.recognizedText) == ["复习"])
         #expect(f.page.suggestions.annotations.first?.gloss == "to be in charge of")
     }
 
@@ -204,7 +204,7 @@ struct SuggestionStage1Tests {
         let item = try #require(f.page.suggestions.pending.first { $0.recognizedText.hasPrefix("fùzé") })
         f.page.suggestions.accept(item.id)
         await suggest(f.page)
-        #expect(f.page.suggestions.pending.map(\.recognizedText) == ["大"])
+        #expect(f.page.suggestions.pending.map(\.recognizedText) == ["复习"])
         // The student adds a stroke inside that note: its source changed, so it is evaluated again.
         let extra = SyntheticInk.stroke(through: [CGPoint(x: f.pinyinInk.bounds.minX + 10, y: f.pinyinInk.bounds.midY),
                                                    CGPoint(x: f.pinyinInk.bounds.maxX - 10, y: f.pinyinInk.bounds.midY)])
@@ -235,7 +235,7 @@ struct SuggestionStage1Tests {
 
     // MARK: - Malformed output is not offered as a word
 
-    @Test func malformedMixedReadingsAreNeverOfferedAsCandidates() async throws {
+    @Test func otherReadingsOfOneCharacterAreNeverOfferedAsCandidates() async throws {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let ink = SyntheticInk.drawing(writing: "大")
         let reader = RegionReader(regions: [.init(bounds: ink.bounds, text: "大",
@@ -243,8 +243,8 @@ struct SuggestionStage1Tests {
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder), lineReader: reader)
         page.drawingDidChange(ink)
         await suggest(page)
-        let item = try #require(page.suggestions.pending.first)
-        #expect(item.proposal.candidates.map(\.hanzi) == ["大", "牛"])
+        // Even clean-looking other readings (牛) are raw OCR: never candidates, never quoted.
+        #expect(page.suggestions.pending.isEmpty)
     }
 
     @Test func aWhollyMalformedReadingOffersNothingAndDoesNotQuoteTheNoise() async throws {

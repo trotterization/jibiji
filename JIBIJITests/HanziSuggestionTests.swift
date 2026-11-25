@@ -47,7 +47,7 @@ struct HanziSuggestionTests {
         #expect(proposal.pinyinState == .wrongTones(written: "hǎo xiāng"))
         let pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: text, proposal: proposal)
         #expect(pending.annotationText == "(hǎoxiàng) · to seem like; to look like")
-        #expect(!pending.allowsInkReplacement)
+        #expect(pending.uncertaintyNote != nil)
         #expect(pending.uncertaintyNote?.contains("hǎo xiāng") == true)
     }
 
@@ -69,15 +69,15 @@ struct HanziSuggestionTests {
         let proposal = try #require(vocabulary.proposal(forRecognizedText: "好 hǎo xiāng"))
         let pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "好 hǎo xiāng", proposal: proposal)
         #expect(pending.annotationText == "像 · (hǎoxiàng) · to seem like; to look like")
-        #expect(!pending.allowsInkReplacement)
+        #expect(pending.uncertaintyNote != nil)
     }
 
-    @Test func alternativesCannotBypassTheInkGuard() throws {
+    @Test func alternativesOfAnUncertainLineCarryACaveat() throws {
         let proposal = try #require(vocabulary.proposal(forRecognizedText: "负责 fùzè"))
         var pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "负责 fùzè", proposal: proposal)
         pending.selectedIndex = 1
-        #expect(proposal.pinyinState.isUncertain && !pending.allowsInkReplacement)
-        #expect(pending.uncertaintyNote?.contains("only be added as a note") == true)
+        #expect(proposal.pinyinState.isUncertain && pending.uncertaintyNote != nil)
+        #expect(pending.uncertaintyNote?.contains("Check this alternative before replacing") == true)
     }
 
     @Test func oneLetterOffIsUncertainAndNeverAnInkEdit() throws {
@@ -86,7 +86,7 @@ struct HanziSuggestionTests {
         #expect(proposal.pinyinState == .possibleSpelling(written: "none fu shi ji"))
         let pending = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: text, proposal: proposal)
         #expect(pending.annotationText == "(nóngfū shìjí) · farmers' market")
-        #expect(!pending.allowsInkReplacement)
+        #expect(pending.uncertaintyNote != nil)
         #expect(pending.uncertaintyNote?.contains("spelling slip or a misread") == true)
     }
 
@@ -220,13 +220,12 @@ final class ReadingDisagreementTests {
         .appending(path: "ReadingDisagreement-\(UUID().uuidString)", directoryHint: .isDirectory)
     deinit { try? FileManager.default.removeItem(at: directory) }
 
-    @Test func differingPinyinFromTwoReadingsBlocksInkReplacement() async throws {
+    @Test func differingPinyinFromTwoReadingsIsShownAsACaveat() async throws {
         let line = RecognizedLine(text: "好 hǎo xiāng", bounds: CGRect(x: 10, y: 10, width: 200, height: 60), sourceText: "好 hao xiang")
         let model = PageSuggestionModel(pageID: "page-1", store: SuggestionStore(directory: directory), reader: StubReaderLocal(lines: [line]))
         model.request(for: SyntheticInk.drawing(writing: "十"))
         await model.task?.value
         let item = try #require(model.pending.first)
-        #expect(!item.allowsInkReplacement)
         #expect(item.uncertaintyNote?.contains("disagree") == true)
     }
 

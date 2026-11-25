@@ -46,7 +46,7 @@ struct InkReplacementTests {
         print("LOCAL CLEAN INK PREVIEW: \(file.path)")
     }
 
-    @Test func uncertainReadingNeverReplacesInkEvenFromTheEditPath() async throws {
+    @Test func uncertainReadingCanBeReplacedAndRestored() async throws {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let store = NoteStore(directory: folder)
         let ink = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 80, y: 160))
@@ -56,12 +56,13 @@ struct InkReplacementTests {
         page.suggestions.request(for: page.drawing)
         await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
-        #expect(!item.allowsInkReplacement)
-        #expect(!page.replaceSuggestion(item.id, with: "农夫市集 nóngfū shìjí"))
-        #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: ink))
-        // It can still be kept as a note beside the ink.
-        page.suggestions.accept(item.id)
-        #expect(page.suggestions.annotations.count == 1)
+        // Uncertain: the chip says so, and Replace is still the student's call.
+        #expect(item.uncertaintyNote != nil)
+        #expect(page.replaceSuggestion(item.id, with: "农夫市集 nóngfū shìjí"))
+        #expect(PageFlashcards.digest(of: page.drawing) != PageFlashcards.digest(of: ink))
+        // Restore brings back exactly the original strokes.
+        let note = try #require(page.latestVisibleReplacement)
+        #expect(page.restoreOriginal(note.id))
         #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: ink))
     }
 
@@ -73,7 +74,7 @@ struct InkReplacementTests {
         let initial = PKDrawing(strokes: original.strokes + neighbor.strokes)
         try store.save(initial, pageID: "page-1")
         let page = NotePageModel(pageID: "page-1", store: store,
-                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["大", "牛"])]))
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "复习", bounds: original.bounds)]))
         page.suggestions.request(for: page.drawing)
         await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
@@ -106,7 +107,7 @@ struct InkReplacementTests {
         let neighbor = SyntheticInk.drawing(writing: "人", origin: CGPoint(x: 400, y: 160))
         let initial = PKDrawing(strokes: original.strokes + neighbor.strokes)
         let page = NotePageModel(pageID: "page-1", store: store,
-                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["牛"])]))
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "复习", bounds: original.bounds)]))
         page.drawingDidChange(initial)
         page.suggestions.request(for: page.drawing); await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
@@ -141,7 +142,7 @@ struct InkReplacementTests {
         let original = SyntheticInk.drawing(writing: "大")
         let neighbor = SyntheticInk.drawing(writing: "人", origin: CGPoint(x: 400, y: 160))
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder),
-                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["大"])]))
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "复习", bounds: original.bounds)]))
         page.drawingDidChange(PKDrawing(strokes: original.strokes + neighbor.strokes))
         page.suggestions.request(for: page.drawing); await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
@@ -179,13 +180,24 @@ struct InkReplacementTests {
         let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
         let original = SyntheticInk.drawing(writing: "大")
         let page = NotePageModel(pageID: "page-1", store: NoteStore(directory: folder),
-                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "大", bounds: original.bounds, readings: ["大"])]))
+                                 lineReader: ReplacementReader(lines: [RecognizedLine(text: "复习", bounds: original.bounds)]))
         page.drawingDidChange(original)
         page.suggestions.request(for: original); await page.suggestions.task?.value
         let item = try #require(page.suggestions.pending.first)
         try Data("blocked".utf8).write(to: folder)
         #expect(!page.replaceSuggestion(item.id, with: "牛"))
         #expect(PageFlashcards.digest(of: page.drawing) == PageFlashcards.digest(of: original))
+    }
+
+    @Test func aLongReplacementKeepsTheHeightOfTheHandwritingInsteadOfShrinking() throws {
+        // A short written word (`shì`) replaced by a whole line (`是 · shì · to be`).
+        let source = CGRect(x: 100, y: 200, width: 60, height: 40)
+        let ink = try #require(CleanHandwriting.drawing(text: "是 · shì · to be", in: source,
+                                                         pen: CleanHandwriting.Pen(), maxWidth: 640))
+        #expect(ink.bounds.height > source.height * 0.6, "not shrunk to fit the short word's width")
+        #expect(ink.bounds.width > source.width)
+        #expect(ink.bounds.maxX <= source.minX + 640 + 6)
+        #expect(abs(ink.bounds.minX - source.minX) < 8)
     }
 }
 

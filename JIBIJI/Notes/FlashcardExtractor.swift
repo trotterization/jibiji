@@ -32,6 +32,75 @@ enum FlashcardExtractor {
         return vocab(text, source: source, vocabulary: vocabulary)
     }
 
+    /// The shared path for a recognized note: special card kinds are decided from its clean text, and an ordinary
+    /// term card is built from the validated fields, so Pinyin is never filed as English and English is never invented.
+    /// `lexicon`, when given, supplies dictionary tones for a term the starter list does not know (电脑学习 dian nao xue xi →
+    /// diànnǎo xuéxí, from 电脑 + 学习). Such a card is still flagged for review.
+    static func extract(from line: RecognizedLine, vocabulary: StarterVocabulary = .standard, lexicon: Lexicon? = nil) -> FlashcardDraft? {
+        guard let resolved = line.resolved else { return extract(from: line.text, vocabulary: vocabulary) }
+        let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let special = labeled(text) != nil || text.contains("→") || text.contains("->")
+            || equation(text, source: text) != nil || grammar(text, source: text, vocabulary: vocabulary) != nil || idiom(text, source: text) != nil
+        if special {
+            var draft = extract(from: text, vocabulary: vocabulary)
+            // Text built without an unresolved field is a partial card: it must be checked.
+            if resolved.fields.contains(where: { $0.1.status == .unresolved }) { draft?.needsReview = true }
+            return draft
+        }
+        // English the student wrote but that could not be read is never replaced by the dictionary's English.
+        if resolved.english.status == .unresolved { return nil }
+        guard resolved.hanzi.isUsable, let hanzi = resolved.hanzi.value, FieldValidation.isHanzi(hanzi) else { return nil }
+        let entry = vocabulary.entries.first { $0.hanzi == hanzi }
+        var review = !resolved.hanzi.isSolid || line.needsReview
+        var pinyin = resolved.pinyin.isUsable ? resolved.pinyin.value : nil
+        if resolved.pinyin.status == .unresolved || resolved.pinyin.status == .tentative { review = true }
+        if let entry, let written = pinyin {
+            if FieldValidation.letters(FieldValidation.words(written)) == entry.syllables.joined() {
+                // The dictionary reading is the evidence when the letters agree; written tones that conflict are kept and flagged.
+                if RecognitionCrossCheck.pinyinAgrees(written, with: entry.pinyin) { pinyin = entry.pinyin } else { review = true }
+            }
+        } else if entry == nil {
+            review = true   // a term the starter vocabulary has never heard of
+        }
+        if let entry {
+            // No Pinyin written beside English: the card still shows the known reading.
+            if pinyin == nil, resolved.pinyin.status == .absent { pinyin = entry.pinyin }
+            // A few letters off the word's reading, cut short of it, or unreadable while the readers came that close: the readers' mistake.
+            let target = Lexicon.foldedLetters(entry.pinyin)
+            let close = { (text: String) in StarterVocabulary.leadingRun(of: FieldValidation.words(text), near: target) != nil }
+            if pinyin.map({ Lexicon.foldedLetters($0) != target && (close($0) || Lexicon.isBeginning($0, of: entry.pinyin)) })
+                ?? (resolved.pinyin.status == .unresolved && resolved.latinEvidence.contains { close($0) || Lexicon.isBeginning($0, of: entry.pinyin) }) {
+                pinyin = entry.pinyin
+                review = true
+            }
+        } else if let reading = lexicon?.reading(of: hanzi, in: resolved), reading.match != .tonesDiffer {
+            // A term the starter list does not know: the same dictionary reading Suggest offers. Tones the student wrote
+            // that disagree with it stay theirs, flagged.
+            pinyin = reading.pinyin
+        }
+        var gloss = resolved.english.isUsable ? resolved.english.value : nil
+        if resolved.english.status == .tentative { review = true }
+        var back: String
+        if let written = gloss {
+            let grounded = entry?.glosses.contains { $0.caseInsensitiveCompare(written) == .orderedSame } ?? false
+            if !grounded { review = true }
+            if written.contains("?") || written.contains("？") { review = true }
+            back = pinyin.map { "\($0) — \(written)" } ?? written
+        } else {
+            // No English was written: only a real vocabulary or dictionary entry can supply one. Otherwise no card.
+            if let entry {
+                gloss = entry.glosses[0]
+                back = "\(pinyin ?? entry.pinyin) — \(entry.glosses[0])"
+            } else if let pinyin, let meaning = lexicon?.gloss(of: hanzi, pinyin: pinyin) {
+                gloss = meaning
+                back = "\(pinyin) — \(meaning)"
+            } else {
+                return nil
+            }
+        }
+        return FlashcardDraft(front: hanzi, back: back, kind: .vocabulary, sourceText: line.rawText, needsReview: review)
+    }
+
     // MARK: - Labels
 
     private static let labels: [(String, FlashcardKind)] = [

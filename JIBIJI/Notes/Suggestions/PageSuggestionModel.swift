@@ -23,6 +23,11 @@ struct RecognizedLine: Sendable, Equatable {
     /// When the line is a grouped note: the indices (in the drawing the reader was given) of exactly the strokes
     /// it was read from. Nil for a line read by bounds alone.
     var strokeIndices: [Int]? = nil
+    /// The validated Hanzi / Pinyin / English of a grouped note. Suggest and cards both read this, nothing else.
+    var resolved: ResolvedNote? = nil
+    /// Other texts this note was known by (the grouping's own composed reading), so notes accepted by text still match.
+    var alsoRead: [String] = []
+    func wasRead(as text: String) -> Bool { rawText == text || alsoRead.contains(text) }
 
     /// Compares this line's readings (``alternatives`` and ``readings``) before anything is drafted or edited.
     /// The ink itself is never touched. `rawText` stays what the primary recognizer read.
@@ -82,27 +87,31 @@ struct PencilInkLineReader: InkLineReader {
             try Task.checkCancellation()
             return RecognitionCrossCheck.resolve(result)
         }
-        // The simulator exposes English-only stroke recognition. Read rendered ink in
-        // Chinese instead of interpreting Hanzi as English letters. Also works on older OSes.
-        guard #available(iOS 27.0, *),
-              PKStrokeRecognizer.supportedLanguages.contains(where: { $0.maximalIdentifier.hasPrefix("zh-Hans") }) else {
-            guard NoteReading.isEnabled else { return try await VisionInkReader.shared.lines(in: drawing) }
-            return try await NoteReading.lines(in: drawing) { strokes, _ in
-                let readings = try await VisionInkReader.shared.lineReadings(in: PKDrawing(strokes: strokes))
-                return readings.first.map { NoteReading.CellRead(text: $0, readings: readings) }
-            }
+        // One reader for Suggest and Cards: the same evidence collector for every cell, field region and whole note.
+        // The simulator exposes English-only stroke recognition; there Vision (and Paddle in Debug) supply the evidence.
+        let supportsChinese: Bool = {
+            guard #available(iOS 27.0, *) else { return false }
+            return PKStrokeRecognizer.supportedLanguages.contains(where: { $0.maximalIdentifier.hasPrefix("zh-Hans") })
+        }()
+        guard NoteReading.isEnabled || supportsChinese else { return try await VisionInkReader.shared.lines(in: drawing) }
+        var recognizer: Any?
+        if supportsChinese, #available(iOS 27.0, *) {
+            let r = PKStrokeRecognizer(preferredLanguages: RecognitionProbe.preferredLanguages)
+            await r.updateDrawing(drawing)
+            recognizer = r
         }
-        let recognizer = PKStrokeRecognizer(preferredLanguages: RecognitionProbe.preferredLanguages)
-        await recognizer.updateDrawing(drawing)
         if NoteReading.isEnabled {
-            return try await NoteReading.lines(in: drawing) { strokes, _ in
-                guard let raw = await recognizer.recognizedText(strokeIDs: Set(strokes.map(\.id))), !raw.isEmpty else { return nil }
-                var text = raw
-                if mode == .suggestions { text = await HanziPrefixFallback.resolve(primary: raw, strokes: strokes) }
-                let readings = (try? await VisionInkReader.shared.lineReadings(in: PKDrawing(strokes: strokes))) ?? []
-                return NoteReading.CellRead(text: text, sourceText: text == raw ? nil : raw, readings: readings)
-            }
+            let recognizer = recognizer
+            return try await NoteReading.lines(
+                in: drawing,
+                readRegion: { strokes in await Self.evidence(for: strokes, recognizer: recognizer) },
+                readCell: { strokes, _ in
+                    let evidence = await Self.evidence(for: strokes, recognizer: recognizer)
+                    guard let primary = Self.primary(of: evidence) else { return nil }
+                    return NoteReading.CellRead(text: primary, evidence: evidence)
+                })
         }
+        guard #available(iOS 27.0, *), let recognizer = recognizer as? PKStrokeRecognizer else { return try await VisionInkReader.shared.lines(in: drawing) }
         var result: [RecognizedLine] = []
         for group in InkLineGeometry.lineGroups(in: drawing) where !group.isEmpty {
             try Task.checkCancellation()
@@ -120,6 +129,76 @@ struct PencilInkLineReader: InkLineReader {
 
         }
         return result
+    }
+}
+
+extension PencilInkLineReader {
+    /// Every engine's reading of exactly these strokes, tagged by engine. Raw evidence, not yet validated.
+    static func evidence(for strokes: [PKStroke], recognizer: Any?) async -> [NoteEvidence.Reading] {
+        var out: [NoteEvidence.Reading] = []
+        #if DEBUG
+        let started = Date()
+        print("EVIDENCE start strokes=\(strokes.count) recognizer=\(recognizer != nil)")
+        defer { print("EVIDENCE done \(String(format: "%.2f", Date().timeIntervalSince(started)))s readings=\(out.map { "\($0.engine.rawValue):\($0.text)" })") }
+        #endif
+        /// The first reading of an engine is its answer; the rest are its lower-ranked guesses (diagnostic only).
+        func add(_ texts: [String], _ engine: NoteEvidence.Engine) {
+            var first = true
+            for text in texts {
+                let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty, !out.contains(where: { $0.text == t && $0.engine == engine }) else { continue }
+                out.append(.init(text: t, engine: engine, scope: .cell, alternate: !first))
+                first = false
+            }
+        }
+        let ink = PKDrawing(strokes: strokes)
+        if #available(iOS 27.0, *), let recognizer = recognizer as? PKStrokeRecognizer,
+           let raw = await recognizer.recognizedText(strokeIDs: Set(strokes.map(\.id))) { add([raw], .pencilKit) }
+        add((try? await VisionInkReader.shared.lineReadings(in: ink, includeMobileModel: false)) ?? [], .vision)
+        #if DEBUG
+        print("EVIDENCE vision done, paddle next")
+        // The model's plain best reading first (the one "Run Pinyin OCR by line" shows), then the beam-search guesses.
+        // The beam's top string can differ from the plain reading; the guesses stay diagnostics.
+        // The larger Paddle model is a separate reader (the first result of "Run Pinyin OCR by line"); it reads short
+        // Pinyin better than the mobile model, so its answer counts as its own evidence.
+        add(await PinyinOCR.shared.recognize(ink).text.map { [$0] } ?? [], .paddleServer)
+        let plain = await PinyinOCR.shared.recognizeMobile(ink).text.map { [$0] } ?? []
+        add(plain + (await PinyinOCR.shared.readings(ink)), .paddle)
+        #endif
+        return out
+    }
+
+    /// The reading grouping uses to decide what kind of writing a cell holds. PencilKit, then Vision, then Paddle,
+    /// except that a Latin reading with garbled tone marks yields to another reading that is valid Pinyin.
+    static func primary(of evidence: [NoteEvidence.Reading]) -> String? {
+        let all = ["PencilKit", "Vision", "PaddleServer", "Paddle", "reader"].flatMap { name in evidence.filter { $0.engine.rawValue == name } }
+        let ordered0 = all.filter { !$0.alternate }
+        // Digit-and-letter soup (`n4O`) is noise from a recognizer reading ink it cannot read; prefer any well-formed reading.
+        let usable = ordered0.filter { ReadingValidation.isWellFormed($0.text) }
+        let ordered = usable.isEmpty ? ordered0 : usable
+        guard let first = ordered.first else { return nil }
+        func malformed(_ text: String) -> Bool {
+            StarterVocabulary.hanzi(in: text).isEmpty && FieldValidation.words(text).contains { FieldValidation.kind(of: $0) == .pinyinMalformed }
+        }
+        func validPinyin(_ text: String) -> Bool {
+            StarterVocabulary.hanzi(in: text).isEmpty && PinyinValidator.analyze(words: FieldValidation.words(text)).isToned
+        }
+        if malformed(first.text), let better = ordered.first(where: { validPinyin($0.text) }) { return better.text }
+        // Plain Pinyin read alike by two other engines (`nong fu shi ji`) outvotes one engine's reading of the same ink that
+        // is not Pinyin at all (`none fu shi ji`). Otherwise that misreading files the Pinyin as English and the note splits.
+        func syllables(_ text: String) -> Bool {
+            let words = FieldValidation.words(text).filter { $0.contains(where: \.isLetter) }
+            return StarterVocabulary.hanzi(in: text).isEmpty && !words.isEmpty
+                && words.allSatisfy { NoteGrouping.isSyllable(StarterVocabulary.latinTokens($0).joined()) }
+        }
+        if StarterVocabulary.hanzi(in: first.text).isEmpty, !syllables(first.text) {
+            let voters = Dictionary(grouping: ordered.filter { $0.engine != first.engine && syllables($0.text) },
+                                    by: { FieldValidation.letters(FieldValidation.words($0.text)) })
+            if let agreed = voters.values.filter({ Set($0.map(\.engine)).count >= 2 }).max(by: { $0.count < $1.count }) {
+                return agreed[0].text
+            }
+        }
+        return first.text
     }
 }
 
@@ -146,7 +225,10 @@ struct PendingSuggestion: Identifiable, Equatable {
 
     var replacementText: String {
         guard !candidate.pinyin.isEmpty || !candidate.gloss.isEmpty else { return candidate.hanzi }
-        let pinyin = selectedIndex == 0 ? proposal.writtenPinyin ?? candidate.pinyin : candidate.pinyin
+        // Replace writes the dictionary word, so its Pinyin is always the word's own tone-marked reading. Pinyin as the
+        // readers resolved it (`nang fu shi ji`: untoned, misspelled or misread) never reaches the page. Any difference
+        // from what was written is shown in the caveat, and Restore brings the student's ink back.
+        let pinyin = candidate.pinyin
         let gloss = selectedIndex == 0 ? proposal.writtenGloss ?? candidate.gloss : candidate.gloss
         return [candidate.hanzi, pinyin, gloss].filter { !$0.isEmpty }.joined(separator: " · ")
     }
@@ -156,22 +238,23 @@ struct PendingSuggestion: Identifiable, Equatable {
     var uncertaintyNote: String? {
         if let readingNote { return readingNote }
         guard selectedIndex == 0 else {
-            return proposal.pinyinState.isUncertain ? "The line as written was uncertain, so this alternative can only be added as a note." : nil
+            return proposal.pinyinState.isUncertain ? "The line as written was uncertain. Check this alternative before replacing; Restore brings your ink back." : nil
         }
         switch proposal.pinyinState {
         case .wrongTones(let written):
             return "Tone marks differ from “\(candidate.pinyin)” (you wrote “\(written)”). Check before accepting."
+        case .possibleSpelling(let written) where proposal.pinyinFromDictionary:
+            let fits = proposal.hanziAlreadyWritten || !proposal.hanziPrefixWritten.isEmpty ? "it and your Hanzi" : "it"
+            return "Your Pinyin “\(written)” couldn't be read reliably. The dictionary word that fits \(fits) is “\(candidate.hanzi)” (\(candidate.pinyin)). Check it before replacing."
         case .possibleSpelling(let written):
             return "Unsure: “\(written)” is close to “\(candidate.pinyin)”. It may be a spelling slip or a misread. Your ink is unchanged."
         default: return nil
         }
     }
 
-    /// Replacing ink is offered only when the reading is solid. A tone or spelling mismatch could be the
-    /// recognizer's mistake, so those stay notes beside the ink.
-    var allowsInkReplacement: Bool {
-        !inkEditSuppressed && !proposal.pinyinState.isUncertain
-    }
+    /// Replace is always offered (the student's decision). The chip previews exactly the text it writes, an uncertain
+    /// reading shows its caveat (`uncertaintyNote`), and Restore brings the original strokes back.
+    var allowsInkReplacement: Bool { true }
 
     /// The note to add beside the ink: Hanzi unless already written, then the gloss unless already written.
     var annotationText: String {
@@ -193,7 +276,7 @@ struct PendingSuggestion: Identifiable, Equatable {
         // note is separate from the student's own writing, which is never changed. (Partial Hanzi keeps the
         // earlier behavior: only the missing character and English.)
         let toneConflict: Bool = { if case .wrongTones = proposal.pinyinState { return true } else { return false } }()
-        if proposal.hanziPrefixWritten.isEmpty || toneConflict, !candidate.pinyin.isEmpty, proposal.pinyinState != .correct {
+        if proposal.hanziPrefixWritten.isEmpty || toneConflict || proposal.pinyinFromDictionary, !candidate.pinyin.isEmpty, proposal.pinyinState != .correct {
             parts.append("(\(candidate.pinyin))")
         }
         if !proposal.glossAlreadyWritten { parts.append(candidate.gloss) }
@@ -269,7 +352,13 @@ final class PageSuggestionModel {
 
     private(set) var pending: [PendingSuggestion] = []
     private(set) var annotations: [AcceptedAnnotation]
-    private(set) var status: Status = .idle
+    private(set) var status: Status = .idle {
+        didSet {
+            #if DEBUG
+            DebugTrace.log("status -> \(status)")
+            #endif
+        }
+    }
     /// Accepted annotations, newest last, that Undo can remove.
     private(set) var undoStack: [UUID] = []
     /// Why accepted notes aren't saved (nil when fine).
@@ -313,6 +402,9 @@ final class PageSuggestionModel {
     ///
     /// Accepted notes are never removed or saved because of ink changes; see `isVisible(_:in:)`.
     func sourceDidChange() {
+        #if DEBUG
+        DebugTrace.log("sourceDidChange rev=\(revision + 1)")
+        #endif
         revision += 1
         task?.cancel()
         task = nil
@@ -331,6 +423,9 @@ final class PageSuggestionModel {
 
     /// The page is no longer shown: drop pending suggestions and any running request. Accepted notes stay.
     func cancelPending() {
+        #if DEBUG
+        DebugTrace.log("cancelPending rev=\(revision + 1)")
+        #endif
         revision += 1
         task?.cancel()
         task = nil
@@ -370,7 +465,13 @@ final class PageSuggestionModel {
         let reader = reader
         task = Task { [weak self] in
             let outcome: Result<[RecognizedLine], any Error>
+            #if DEBUG
+            DebugTrace.log("request task start")
+            #endif
             do { outcome = .success(try await reader.lines(in: readable)) } catch { outcome = .failure(error) }
+            #if DEBUG
+            DebugTrace.log("reader returned")
+            #endif
             guard let self, !Task.isCancelled, self.revision == requested else { return }
             self.finish(outcome, revision: requested, drawing: drawing, strokeIDs: strokeIDs, readable: readable)
         }
@@ -395,8 +496,16 @@ final class PageSuggestionModel {
             // Recognition trouble never blocks writing or touches strokes.
             status = .message(error is InkLineReaderError ? error.localizedDescription : "Suggestions aren't available right now. Keep writing.")
         case .success(let recognized):
+            #if DEBUG
+            print("SUGGEST finish lines=\(recognized.count)")
+            DebugTrace.log("finish lines=\(recognized.count)")
+            #endif
             let lines = RecognitionCrossCheck.resolve(recognized, vocabulary: vocabulary)
+            #if DEBUG
+            DebugTrace.log("crosscheck done lines=\(lines.count)")
+            #endif
             var unmatched: [String] = []
+            var unreadable: [String] = []
             // Which accepted notes still have their source on the page, decided once (not per line).
             let readableIDs = lines.contains { $0.strokeIndices != nil } ? readable.strokes.map(InkSelection.identity) : []
             // (`strokeIDs` exists whenever any note is a replacement.)
@@ -406,25 +515,51 @@ final class PageSuggestionModel {
                 return ids.indices.contains { replacement.replacementStrokeIDs.contains(ids[$0]) && !drawing.strokes[$0].renderBounds.isEmpty }
             }
             pending = lines.compactMap { line in
-                let proposal: SuggestionProposal
+                var proposal: SuggestionProposal
                 var seen = Set<String>()
-                // Malformed mixed OCR (`x7大`, `a3b9`) is never offered as a word, whatever else the line holds.
-                let readings = ([line.text] + line.readings + line.alternatives)
-                    .filter { !$0.isEmpty && ReadingValidation.isWellFormed($0) && seen.insert($0).inserted }
-                let differentHanzi = Set(readings.map { StarterVocabulary.hanzi(in: $0) }).count > 1
-                let isolatedCharacter = line.text.count == 1 && !StarterVocabulary.hanzi(in: line.text).isEmpty
-                if let known = vocabulary.proposal(forRecognizedText: line.text) {
+                // Only a vocabulary entry proposes a completion, from the note's validated text. Raw OCR readings are
+                // never offered as words, alternatives or replacement text; they stay in `line.resolved.diagnostics`.
+                // Whether the Latin text is the note's Pinyin: English-only notes are never looked up as Pinyin (`like`).
+                let latinIsPinyin: Bool? = line.resolved.flatMap { resolved -> Bool? in
+                    guard resolved.pinyin.isUsable else { return false }
+                    return resolved.english.isUsable ? nil : true
+                }
+                let known = vocabulary.proposal(forRecognizedText: line.text, latinIsPinyin: latinIsPinyin)
+                // Pinyin was written (so the note is more than bare Hanzi) but the match above did not use it: the Hanzi
+                // alone matched. The readers' Pinyin guesses may be close to a longer dictionary word that begins with the Hanzi.
+                let pinyinWritten = line.resolved.map { $0.pinyin.status != .absent } ?? false
+                // With no Hanzi, only readings that are shaped like Pinyin count, and at least one must carry a tone mark:
+                // an English word never reaches the dictionary as Pinyin.
+                var evidence = line.resolved?.latinEvidence ?? []
+                if StarterVocabulary.hanziRuns(in: line.text).isEmpty,
+                   line.resolved.map({ $0.pinyin.status == .absent || $0.english.isUsable }) == true {
+                    // No Hanzi, and either no Pinyin was written or the note's English was read: nothing to repair.
+                    evidence = []
+                } else if StarterVocabulary.hanziRuns(in: line.text).isEmpty {
+                    evidence = evidence.filter { text in
+                        let words = FieldValidation.words(text)
+                        return !words.isEmpty && words.allSatisfy { FieldValidation.kind(of: $0) != .english }
+                    }
+                    if !evidence.contains(where: { $0 != $0.folding(options: .diacriticInsensitive, locale: nil) }) { evidence = [] }
+                }
+                let repaired = (known == nil || (pinyinWritten && known?.pinyinAlreadyWritten == false))
+                    ? vocabulary.repairedProposal(forRecognizedText: line.text, latinEvidence: evidence,
+                                                  writtenPinyin: line.resolved?.pinyin.value,
+                                                  writtenEnglish: line.resolved.flatMap { $0.english.isUsable ? $0.english.value : nil }) : nil
+                #if DEBUG
+                DebugTrace.log("decide text=“\(line.text)” source=“\(line.sourceText ?? "-")” pinyinStatus=\(line.resolved?.pinyin.status.rawValue ?? "nil") evidence=\(line.resolved?.latinEvidence.count ?? -1) known=\(known?.candidates.map { $0.hanzi + " " + $0.pinyin } ?? []) knownPinyinWritten=\(known?.pinyinAlreadyWritten ?? false) repaired=\(repaired?.candidates.map { $0.hanzi + " " + $0.pinyin } ?? [])")
+                #endif
+                if let repaired {
+                    proposal = repaired
+                } else if let known {
                     proposal = known
-                } else if !line.inkEditSuppressed, !line.readings.isEmpty,
-                          ReadingValidation.isWellFormed(line.text),
-                          readings.contains(where: { !StarterVocabulary.hanzi(in: $0).isEmpty }),
-                          differentHanzi || isolatedCharacter {
-                    proposal = SuggestionProposal(
-                        candidates: readings.map { SuggestionCandidate(hanzi: $0, pinyin: "", gloss: "") },
-                        hanziAlreadyWritten: false, glossAlreadyWritten: true)
+                } else if let phrase = line.resolved.flatMap({ vocabulary.phraseProposal(for: $0) }) {
+                    proposal = phrase
                 } else {
-                    // Hanzi the starter vocabulary has never heard of: say so rather than guess or stay silent.
-                    // A word it knows (already complete, or contradicted by other writing) is not "unknown".
+                    // Say what could not be settled rather than guess or stay silent.
+                    if let doubt = line.resolved?.reviewNote {
+                        unreadable.append((line.resolved?.hanzi.value).map { "Nothing to suggest for \($0). \(doubt)" } ?? doubt)
+                    }
                     let runs = StarterVocabulary.hanziRuns(in: line.text)
                     let known = vocabulary.entries.contains { runs.contains($0.hanzi) }
                     if !runs.isEmpty, !known, ReadingValidation.isWellFormed(line.text) { unmatched.append(line.text) }
@@ -440,12 +575,25 @@ final class PageSuggestionModel {
                     // if the recognizer happens to read the same text (so it is evaluated again). Older notes have
                     // only the text to go on.
                     if note.replacement == nil, let ids = note.sourceStrokeIDs, !ids.isEmpty { return Set(ids) == sourceIDs }
-                    return note.recognizedText == line.rawText && note.anchor.intersects(line.bounds)
+                    return line.wasRead(as: note.recognizedText) && note.anchor.intersects(line.bounds)
                 }
                 if alreadyAccepted { return nil }
                 // Two recognizers read the Latin part differently: it may be a misread, not the student's slip.
                 var readingNote = line.reviewNote
                 var suppressInk = line.inkEditSuppressed
+                // A dictionary-repaired suggestion previews the exact text it would write, and Restore brings the ink back,
+                // so it may replace when the Hanzi is solid. The caveat names what was repaired; the readers' own doubt is
+                // already in it, so it is not shown twice.
+                if proposal.pinyinFromDictionary, line.resolved?.hanzi.status == .confirmed {
+                    suppressInk = false
+                    readingNote = nil
+                }
+                // The readers agree on the Pinyin as written and only its tone marks differ from the dictionary's.
+                if case .wrongTones = proposal.pinyinState, line.resolved?.pinyin.status == .confirmed,
+                   line.resolved?.hanzi.status == .confirmed {
+                    proposal.correctsConfirmedPinyin = true
+                    suppressInk = false
+                }
                 if readingNote == nil, let source = line.sourceText,
                    StarterVocabulary.latinTokenPairs(source).map(\.raw) != StarterVocabulary.latinTokenPairs(line.text).map(\.raw) {
                     readingNote = "Two readings of this ink disagree on the Pinyin, so it is uncertain. Check it. Your ink is unchanged."
@@ -457,7 +605,17 @@ final class PageSuggestionModel {
                                          readingNote: readingNote, inkEditSuppressed: suppressInk)
             }
             // Only when nothing else was offered, so it never sits beside working suggestions looking like a failure.
-            if pending.isEmpty, !unmatched.isEmpty {
+            #if DEBUG
+            DebugTrace.log("pending=\(pending.count) unreadable=\(unreadable.count) unmatched=\(unmatched.count)")
+            for item in pending {
+                DebugTrace.log("chip: note=“\(item.annotationText)” replace=“\(item.cleanText)” candidates=\(item.proposal.candidates.map { $0.hanzi + " " + $0.pinyin }) caveat=\(item.uncertaintyNote ?? "none")")
+            }
+            #endif
+            if pending.isEmpty, !unreadable.isEmpty {
+                // Several notes often share one reason; say each once.
+                var seen = Set<String>()
+                status = .message(unreadable.filter { seen.insert($0).inserted }.joined(separator: " "))
+            } else if pending.isEmpty, !unmatched.isEmpty {
                 status = .message(Self.noMatchMessage(unmatched))
             } else {
                 status = pending.isEmpty ? .message("No clear reading found. Try a smaller group of words or clearer spacing. Your ink is unchanged.") : .idle
