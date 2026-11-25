@@ -137,9 +137,20 @@ enum FieldResolver {
         let voted = syllableVoters.filter { $0.value.count >= 2 }
             .max { $0.value.count != $1.value.count ? $0.value.count < $1.value.count : $0.key > $1.key }
         var outvoted = false
+        // The English the engines read after Pinyin they could place (`study fair` of `xue xi shi ji study fair`). An engine
+        // that garbled the same Pinyin too badly to place it (`Kuen um she ji Study fair`) ends its Pinyin there as well.
+        let tails = Set(evidence.filter { !$0.alternate && !$0.partial && $0.field == nil }.compactMap { reading -> String? in
+            let parsed = parse(reading, vocabulary: vocabulary, contextHanzi: entry.hanzi?.text)
+            return parsed.placedPinyin ? parsed.english.map { FieldValidation.letters(FieldValidation.words($0)) } : nil
+        }.filter { !$0.isEmpty })
         for reading in evidence {
             if reading.alternate { note("Alternate reading: “\(reading.text)” (\(reading.engine.rawValue))"); continue }
-            let parsed = parse(reading, vocabulary: vocabulary, contextHanzi: entry.hanzi?.text)
+            var parsed = parse(reading, vocabulary: vocabulary, contextHanzi: entry.hanzi?.text)
+            if reading.field == nil, !reading.partial, !parsed.placedPinyin, let whole = parsed.english,
+               let cut = englishSuffix(of: whole, matching: tails) {
+                note("Misread Pinyin before the English: “\(whole)” (\(reading.source))")
+                parsed.english = cut
+            }
             // One cell of a multi-cell field (`xiang` of `hǎo xiang`) is a piece, not an answer for the whole field.
             // Its text still reaches the field through the grouping's joined text; here it is only a diagnostic.
             if reading.partial {
@@ -182,12 +193,14 @@ enum FieldResolver {
                 // A reading that is real English stays English (`he` beside `tā`). Only one that is NOT English and sits
                 // within a few letters of a Pinyin reading of the same note is that Pinyin filed in the wrong field.
                 let letters = FieldValidation.letters(FieldValidation.words(e))
-                let realEnglish = FieldValidation.isEnglish(e, hanzi: parsed.hanzi, vocabulary: vocabulary)
+                // Judged beside the note's own Hanzi even when this reading is of the Latin ink alone: `dian` beside 电脑 is its
+                // Pinyin, whatever a spell checker thinks of the word.
+                let realEnglish = FieldValidation.isEnglish(e, hanzi: parsed.hanzi ?? entry.hanzi?.text, vocabulary: vocabulary)
                 if !realEnglish, !letters.isEmpty,
                    pinyinLetters.contains(where: { StarterVocabulary.editDistance(letters, $0) <= max(2, $0.count / 3) }) {
                     misfiled = true
                     note("English reading is misfiled Pinyin: “\(e)” (\(reading.source))")
-                } else if FieldValidation.isEnglish(e, hanzi: parsed.hanzi, vocabulary: vocabulary) {
+                } else if realEnglish {
                     english.append(Candidate(text: e, source: reading.source, toned: false, rank: rank(reading)))
                 } else {
                     note("English reading rejected (not English): “\(e)” (\(reading.source))")
@@ -244,6 +257,24 @@ enum FieldResolver {
         var pinyin: [String]?
         var english: String?
         var rejected: [String] = []
+        /// The Pinyin was found by the Hanzi's own reading, so where it ends is known.
+        var placedPinyin = false
+    }
+
+    /// The last words of `text` that are another engine's English within a third of its letters, when that fits better than
+    /// the whole text does. Nil when nothing needs cutting.
+    private static func englishSuffix(of text: String, matching tails: Set<String>) -> String? {
+        let words = FieldValidation.words(text)
+        guard words.count >= 2 else { return nil }
+        var best: (start: Int, distance: Int)?
+        for tail in tails.sorted() {
+            let whole = StarterVocabulary.editDistance(FieldValidation.letters(words), tail)
+            for start in 1..<words.count {
+                let distance = StarterVocabulary.editDistance(FieldValidation.letters(Array(words[start...])), tail)
+                if distance <= tail.count / 3, distance < whole, best == nil || distance < best!.distance { best = (start, distance) }
+            }
+        }
+        return best.map { words[$0.start...].joined(separator: " ") }
     }
 
     /// The text of a reading with its Hanzi removed.
@@ -279,6 +310,7 @@ enum FieldResolver {
                     + vocabulary.entries.filter { $0.hanzi == anchor }.map { $0.syllables.joined() }
                 if let lead = targets.compactMap({ StarterVocabulary.leadingRun(of: words, near: $0) }).min(by: { $0.distance < $1.distance }) {
                     result.pinyin = Array(words[..<lead.count])
+                    result.placedPinyin = true
                     if lead.count < words.count { result.english = words[lead.count...].joined(separator: " ") }
                     return result
                 }
@@ -329,7 +361,7 @@ enum FieldResolver {
         let known = vocabulary.entries.contains { $0.hanzi.hasPrefix(best.key) }
         let confirmed = (independent(sources) >= 2 || known) && !conflict
         return ResolvedField(value: best.key, status: confirmed ? .confirmed : .tentative,
-                             note: conflict ? "the readings disagree on the Hanzi" : (confirmed ? nil : "read only once"), sources: sources)
+                             note: conflict ? "the readings disagree on the Hanzi" : (confirmed ? nil : "only one reader could read it"), sources: sources)
     }
 
     private static func pickPinyin(_ candidates: [Candidate], entry: NoteGrouping.Entry, hanzi: String?, pinyinSeen: Bool,
@@ -343,9 +375,13 @@ enum FieldResolver {
             guard let hanzi else { return true }
             return FieldValidation.fitsHanzi(letters, hanzi: hanzi, vocabulary: vocabulary)
         }
+        // Only the beginning of the Hanzi's reading (`xue xi shi` of `xuexishiji`): an incomplete reading.
+        let wholeReading = hanzi.map { ReadingCrossCheck.romanization(of: $0) } ?? ""
+        func incomplete(_ letters: String) -> Bool { letters != wholeReading && wholeReading.hasPrefix(letters) }
         let ranked = groups.sorted { a, b in
             let fa = fits(a.key), fb = fits(b.key)
             if fa != fb { return fa }
+            if fa, incomplete(a.key) != incomplete(b.key) { return incomplete(b.key) }
             let sa = Set(a.value.map(\.source)).count, sb = Set(b.value.map(\.source)).count
             if sa != sb { return sa > sb }
             // A field read as a whole outranks pieces of it joined.
@@ -372,7 +408,7 @@ enum FieldResolver {
         let corroborated = independent(sources) >= 2
         let vocabularyFit = hanzi.map { h in vocabulary.entries.contains { $0.hanzi.hasPrefix(h) && $0.syllables.joined().hasPrefix(best.key) || $0.syllables.joined() == best.key && $0.hanzi == h } } ?? false
         var status: FieldStatus = (corroborated || vocabularyFit) && tentativeNote == nil ? .confirmed : .tentative
-        if tentativeNote == nil, !status.isConfirmed { tentativeNote = "read only once" }
+        if tentativeNote == nil, !status.isConfirmed { tentativeNote = "only one reader could read it" }
         if best.value.allSatisfy({ !$0.toned }), tentativeNote == nil { status = .confirmed }
         return ResolvedField(value: value, status: status, note: tentativeNote, sources: sources)
     }
@@ -397,7 +433,7 @@ enum FieldResolver {
         let confirmed = independent(sources) >= 2 || grounded
         let disputed = ranked.count > 1
         return ResolvedField(value: value, status: confirmed && !disputed ? .confirmed : .tentative,
-                             note: disputed ? "the readings differ" : (confirmed ? nil : "read only once; the wording is the student's own"), sources: sources)
+                             note: disputed ? "the readings differ" : (confirmed ? nil : "only one reader could read it"), sources: sources)
     }
 }
 

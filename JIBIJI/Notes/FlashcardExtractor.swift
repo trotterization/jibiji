@@ -62,26 +62,21 @@ enum FlashcardExtractor {
         } else if entry == nil {
             review = true   // a term the starter vocabulary has never heard of
         }
-        // Pinyin that was written but could not be read is not replaced; untoned or missing Pinyin gets dictionary tones.
-        if entry == nil, let lexicon, resolved.pinyin.status != .unresolved,
-           let toned = lexicon.pinyin(forPhrase: hanzi, written: pinyin) {
-            pinyin = toned
-        }
-        // No Pinyin written beside English: the card still shows the known reading.
-        if pinyin == nil, resolved.pinyin.status == .absent, let entry { pinyin = entry.pinyin }
-        // Pinyin a few letters off the word's reading (`nong fo shi ji`), or unreadable while the readers came that close
-        // (`none fu she ji`), is the readers' mistake about the student's Pinyin: the card takes the dictionary's reading
-        // of the Hanzi, and is flagged for the student to check, as Suggest's dictionary repair is.
-        if let known = entry?.pinyin ?? lexicon?.pinyin(forPhrase: hanzi, written: nil) {
-            let target = Lexicon.foldedLetters(known)
+        if let entry {
+            // No Pinyin written beside English: the card still shows the known reading.
+            if pinyin == nil, resolved.pinyin.status == .absent { pinyin = entry.pinyin }
+            // A few letters off the word's reading, or unreadable while the readers came that close: the readers' mistake.
+            let target = Lexicon.foldedLetters(entry.pinyin)
             let close = { (text: String) in StarterVocabulary.leadingRun(of: FieldValidation.words(text), near: target) != nil }
-            if let written = pinyin, Lexicon.foldedLetters(written) != target, close(written) {
-                pinyin = known
-                review = true
-            } else if resolved.pinyin.status == .unresolved, resolved.latinEvidence.contains(where: close) {
-                pinyin = known
+            if pinyin.map({ Lexicon.foldedLetters($0) != target && close($0) })
+                ?? (resolved.pinyin.status == .unresolved && resolved.latinEvidence.contains(where: close)) {
+                pinyin = entry.pinyin
                 review = true
             }
+        } else if let reading = lexicon?.reading(of: hanzi, in: resolved), reading.match != .tonesDiffer {
+            // A term the starter list does not know: the same dictionary reading Suggest offers. Tones the student wrote
+            // that disagree with it stay theirs, flagged.
+            pinyin = reading.pinyin
         }
         var gloss = resolved.english.isUsable ? resolved.english.value : nil
         if resolved.english.status == .tentative { review = true }

@@ -553,9 +553,13 @@ final class PageSuggestionModel {
                     proposal = repaired
                 } else if let known {
                     proposal = known
+                } else if let phrase = line.resolved.flatMap({ vocabulary.phraseProposal(for: $0) }) {
+                    proposal = phrase
                 } else {
                     // Say what could not be settled rather than guess or stay silent.
-                    if let doubt = line.resolved?.reviewNote { unreadable.append(doubt) }
+                    if let doubt = line.resolved?.reviewNote {
+                        unreadable.append((line.resolved?.hanzi.value).map { "Nothing to suggest for \($0). \(doubt)" } ?? doubt)
+                    }
                     let runs = StarterVocabulary.hanziRuns(in: line.text)
                     let known = vocabulary.entries.contains { runs.contains($0.hanzi) }
                     if !runs.isEmpty, !known, ReadingValidation.isWellFormed(line.text) { unmatched.append(line.text) }

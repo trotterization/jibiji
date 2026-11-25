@@ -247,6 +247,30 @@ struct StarterVocabulary: Sendable {
         )
     }
 
+    /// A note whose Hanzi is written but is not one dictionary word, or whose English is the student's own: the dictionary's
+    /// tone-marked reading of the Hanzi, word by word. English is only ever what the student wrote; none is made up.
+    /// Nil when a tone is undecided, nothing is missing, or written English could not be read (Replace would lose it).
+    func phraseProposal(for note: ResolvedNote) -> SuggestionProposal? {
+        guard let lexicon = activeLexicon, note.hanzi.isUsable, let hanzi = note.hanzi.value, FieldValidation.isHanzi(hanzi),
+              note.english.status != .unresolved, let reading = lexicon.reading(of: hanzi, in: note), reading.complete else { return nil }
+        let written = note.pinyin.isUsable ? note.pinyin.value ?? "" : ""
+        let state: PinyinState
+        switch reading.match {
+        case .notWritten: state = .notWritten
+        case .misread: state = .possibleSpelling(written: written.isEmpty ? note.latinEvidence.first ?? "" : written)
+        case .sameLetters, .tonesDiffer:
+            let flat = { (text: String) in text.precomposedStringWithCanonicalMapping.lowercased().filter { !$0.isWhitespace } }
+            state = Self.toneState(written: flat(written), expected: flat(reading.pinyin), display: written)
+        }
+        guard state != .correct else { return nil }
+        let english = note.english.isUsable ? note.english.value ?? "" : ""
+        return SuggestionProposal(
+            candidates: [SuggestionCandidate(hanzi: hanzi, pinyin: reading.pinyin, gloss: english)],
+            hanziAlreadyWritten: true, glossAlreadyWritten: true, pinyinState: state,
+            pinyinFromDictionary: reading.match == .misread,
+            writtenPinyin: written.isEmpty ? nil : written, writtenGloss: english.isEmpty ? nil : english)
+    }
+
     /// The matcher: whether `entries` fit the recognized text, and what is left to offer.
     private func match(in entries: [Entry], text: String) -> SuggestionProposal? {
         let pairs = Self.latinTokenPairs(text)

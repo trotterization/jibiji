@@ -179,3 +179,57 @@ struct LocalNongfuPage12Tests {
         #expect(draft.needsReview, "the Pinyin was not read as written: the student checks it")
     }
 }
+
+/// Replays of private iPad pages. The ink, the readings and the expected results all live in the private evidence folder
+/// beside the repository (`replays/*.json`), so nothing read from a student's handwriting is in this file.
+@Suite("Private replays (local only)", .serialized)
+struct PrivateReplayTests {
+    struct Fixture: Decodable {
+        struct Region: Decodable { var strokes: [Int]; var readings: [[String]] }
+        var drawing: String
+        /// First and last stroke of the note on its page.
+        var strokes: [Int]
+        /// What each engine read for a set of strokes, given as first and last stroke.
+        var regions: [Region]
+        var front: String, back: String, replace: String
+    }
+    static var folder: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "jibiji-device-evidence-private")
+    }
+    static var fixtures: [URL] {
+        ((try? FileManager.default.contentsOfDirectory(at: folder.appending(path: "replays"), includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "json" }
+    }
+
+    @Test(.enabled(if: !PrivateReplayTests.fixtures.isEmpty))
+    func savedPagesGiveTheExpectedSuggestionAndCard() async throws {
+        for url in Self.fixtures {
+            let f = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+            let page = try PKDrawing(data: Data(contentsOf: Self.folder.appending(path: f.drawing)))
+            let drawing = PKDrawing(strokes: Array(page.strokes[f.strokes[0]...f.strokes[1]]))
+            let index = Dictionary(uniqueKeysWithValues: drawing.strokes.enumerated().map { (InkSelection.identity($1), $0 + f.strokes[0]) })
+            func readings(_ strokes: [PKStroke]) -> [NoteEvidence.Reading] {
+                let ids = strokes.compactMap { index[InkSelection.identity($0)] }.sorted()
+                guard let region = f.regions.first(where: { $0.strokes == [ids.first ?? -1, ids.last ?? -1] }) else {
+                    Issue.record("no reading for strokes \(ids) in \(url.lastPathComponent)")
+                    return []
+                }
+                return region.readings.compactMap { r in NoteEvidence.Engine(rawValue: r[0]).map { .init(text: r[1], engine: $0, scope: .cell) } }
+            }
+            let lines = try await NoteReading.lines(in: drawing, readRegion: { readings($0) }, readCell: { strokes, _ in
+                let e = readings(strokes)
+                return PencilInkLineReader.primary(of: e).map { NoteReading.CellRead(text: $0, evidence: e) }
+            })
+            #expect(lines.count == 1, "\(url.lastPathComponent): \(lines.map(\.text))")
+            let line = try #require(lines.first)
+            #expect(line.strokeIndices?.count == drawing.strokes.count)
+            let card = FlashcardExtractor.extract(from: line, lexicon: Lexicon.shared)
+            #expect(card?.front == f.front)
+            #expect(card?.back == f.back)
+            let vocabulary = StarterVocabulary(entries: StarterVocabulary.standard.entries, lexicon: Lexicon.shared)
+            let proposal = try #require(vocabulary.proposal(forRecognizedText: line.text) ?? line.resolved.flatMap { vocabulary.phraseProposal(for: $0) })
+            #expect(PendingSuggestion(revision: 0, anchor: .zero, recognizedText: line.text, proposal: proposal).replacementText == f.replace)
+        }
+    }
+}

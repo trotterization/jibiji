@@ -143,7 +143,38 @@ final class Lexicon: @unchecked Sendable {
     /// the student wrote; a word whose matching readings differ only in tone (东西 dōngxī / dōngxi) keeps the letters
     /// untoned. With no written Pinyin, every word must have exactly one reading. Nil when some part is no dictionary
     /// word, the letters do not fit, or nothing would gain a tone.
-    func pinyin(forPhrase hanzi: String, written: String?) -> String? {
+    func pinyin(forPhrase hanzi: String, written: String?) -> String? { phraseReading(hanzi, written: written)?.pinyin }
+
+    /// How a note's Pinyin compares with the dictionary's reading of its Hanzi.
+    enum ReadingMatch: Equatable, Sendable {
+        /// No Pinyin was written.
+        case notWritten
+        /// The right letters, with no tone mark that disagrees.
+        case sameLetters
+        /// The right letters with a tone mark that disagrees.
+        case tonesDiffer
+        /// A few letters off, or unreadable while the readers came that close.
+        case misread
+    }
+
+    /// The dictionary's reading of a note's Hanzi, and how the note's Pinyin compares. Suggest and cards both use this, so
+    /// they cannot disagree. Nil when the dictionary has no reading, or what was written is not close to it.
+    /// `complete` is false when some word's tone could not be decided.
+    func reading(of hanzi: String, in note: ResolvedNote) -> (pinyin: String, complete: Bool, match: ReadingMatch)? {
+        let written = note.pinyin.isUsable ? note.pinyin.value : nil
+        if let written, let toned = phraseReading(hanzi, written: written) { return (toned.pinyin, toned.complete, .sameLetters) }
+        guard let known = phraseReading(hanzi, written: nil) else { return nil }
+        let target = Lexicon.foldedLetters(known.pinyin)
+        func close(_ text: String) -> Bool { StarterVocabulary.leadingRun(of: FieldValidation.words(text), near: target) != nil }
+        if let written {
+            if Lexicon.foldedLetters(written) == target { return (known.pinyin, known.complete, .tonesDiffer) }
+            return close(written) ? (known.pinyin, known.complete, .misread) : nil
+        }
+        if note.pinyin.status == .absent { return (known.pinyin, known.complete, .notWritten) }
+        return note.latinEvidence.contains(where: close) ? (known.pinyin, known.complete, .misread) : nil
+    }
+
+    private func phraseReading(_ hanzi: String, written: String?) -> (pinyin: String, complete: Bool)? {
         let chars = Array(hanzi)
         guard !chars.isEmpty, chars.count <= 24,
               chars.allSatisfy({ $0.unicodeScalars.allSatisfy { (0x3400...0x9FFF).contains($0.value) } }) else { return nil }
@@ -212,7 +243,7 @@ final class Lexicon: @unchecked Sendable {
             return found
         }
         guard let pieces = solve(0, 0), pieces.contains(where: \.toned) else { return nil }
-        return pieces.map(\.text).joined(separator: " ")
+        return (pieces.map(\.text).joined(separator: " "), pieces.allSatisfy(\.toned))
     }
 
     // MARK: - Candidate selection for the suggestion matcher

@@ -274,6 +274,105 @@ import Testing
         }
     }
 
+    // MARK: - A phrase that is not one dictionary word, in cells that cut across the fields (invented example)
+
+    /// `学习市集 xue xi shi ji study fair` cut into `xue | xi shi ji study | fair`, with one engine misreading the Pinyin.
+    private func runReadings(_ primary: [String], _ other: [String]) -> [NoteGrouping.Reading] {
+        func cell(_ x: CGFloat, _ width: CGFloat, _ strokes: [Int]) -> NoteLayout.CellCandidate {
+            NoteLayout.CellCandidate(strokeIndices: strokes, bounds: CGRect(x: x, y: 100, width: width, height: 50), column: 0, scale: 30, gapBefore: nil)
+        }
+        let cells = [cell(300, 80, [4]), cell(410, 300, [5, 6]), cell(760, 80, [7])]
+        return [.init(cell: cell(100, 150, [0, 1, 2, 3]), text: "学习市集")]
+            + cells.enumerated().map { .init(cell: $1, text: primary[$0], engines: ["PencilKit": primary[$0], "Paddle": other[$0]]) }
+    }
+
+    @Test func latinCellsBesideOneWordAreOneRunEvenWhenACellHoldsBothFields() throws {
+        let entries = NoteGrouping.entries(from: runReadings(["Kue", "in she ji Study", "fair"], ["xue", "xi shi ji study", "fair"]))
+        #expect(entries.count == 1)
+        let entry = try #require(entries.first)
+        #expect(entry.hanzi?.text == "学习市集")
+        #expect(entry.pinyin?.text == "xue xi shi ji")
+        #expect(entry.english?.text == "study fair")
+        #expect(entry.strokeIndices == Array(0...7), "no ink is left out")
+        // Cells that end where the Pinyin ends keep separate strokes for each field.
+        let clean = try #require(NoteGrouping.entries(from: runReadings(["xue", "xi shi ji", "study"], ["xue", "xi shi ji", "study"])).first)
+        #expect(clean.pinyin?.text == "xue xi shi ji")
+        #expect(clean.english?.strokeIndices == [7])
+        // Latin that does not begin with the word's reading is not claimed as its Pinyin.
+        let other = NoteGrouping.entries(from: runReadings(["big", "red house", "here"], ["big", "red house", "here"]))
+        #expect(!other.contains { $0.hanzi != nil && $0.pinyin != nil })
+    }
+
+    @Test func pinyinOfTheNotesOwnHanziIsNeverItsEnglish() throws {
+        // `dian` passes a spell checker; beside 电脑 it is Pinyin. Every engine agrees, as on the iPad.
+        func field(_ text: String, _ strokes: [Int]) -> NoteGrouping.Field { .init(text: text, cellText: text, strokeIndices: strokes, bounds: .zero) }
+        let entry = NoteGrouping.Entry(hanzi: field("电脑", [0]), pinyin: nil, english: field("dian", [1]), arrangement: .sideBySide, uncertainty: [])
+        let readings: [NoteEvidence.Reading] = [.paddle, .paddleServer].flatMap { (engine: NoteEvidence.Engine) -> [NoteEvidence.Reading] in
+            [.init(text: "dian", engine: engine, scope: .cell, field: .english), .init(text: "电脑dian", engine: engine, scope: .entry)]
+        }
+        let resolved = FieldResolver.resolve(entry: entry, readings: readings)
+        #expect(resolved.english.value == nil)
+    }
+
+    @Test func pinyinOneEngineGarbledBeyondRecognitionIsCutFromItsEnglish() {
+        // Invented readings: the Paddle engines place the Pinyin but misspell the English; PencilKit does the reverse.
+        func field(_ text: String) -> NoteGrouping.Field { .init(text: text, cellText: text, strokeIndices: [1, 2], bounds: .zero) }
+        let entry = NoteGrouping.Entry(hanzi: .init(text: "学习市集", cellText: "学习市集", strokeIndices: [0], bounds: .zero),
+                                       pinyin: field("xue xi shi ji"), english: field("stody fair"), arrangement: .sideBySide, uncertainty: [])
+        let readings: [NoteEvidence.Reading] = [
+            .init(text: "Kate um she by Study fair", engine: .pencilKit, scope: .field),
+            .init(text: "xue xi shi ji stody fair", engine: .paddleServer, scope: .field),
+            .init(text: "学习市集xue xi shi ji stndy fair", engine: .paddle, scope: .entry),
+        ]
+        let resolved = FieldResolver.resolve(entry: entry, readings: readings)
+        #expect(resolved.pinyin.value == "xue xi shi ji")
+        #expect(resolved.english.value == "Study fair")
+        // English every engine reads in full is never shortened.
+        let full = FieldResolver.resolve(entry: entry, readings: [
+            .init(text: "xue xi shi ji big study fair", engine: .paddle, scope: .field),
+            .init(text: "xue xi shi ji big study fair", engine: .pencilKit, scope: .field),
+        ])
+        #expect(full.english.value == "big study fair")
+    }
+
+    private func phraseNote(_ pinyin: ResolvedField, _ english: ResolvedField, evidence: [String] = []) -> ResolvedNote {
+        ResolvedNote(hanzi: .init(value: "学习市集", status: .confirmed), pinyin: pinyin, english: english, diagnostics: [], latinEvidence: evidence)
+    }
+
+    @Test func suggestOffersTonesForAPhraseWordByWordAndCardsAgree() throws {
+        #expect(Lexicon.shared?.rows(forHanzi: "学习市集").isEmpty == true, "not one dictionary word")
+        let english = ResolvedField(value: "study fair", status: .tentative)
+        let notes = [
+            phraseNote(.init(value: "xue xi shi ji", status: .confirmed), english),
+            phraseNote(.init(value: "xue xi sho ji", status: .tentative), english),
+            phraseNote(.init(value: nil, status: .unresolved), english, evidence: ["xne xi shi ji study fair"]),
+            phraseNote(.absent, english),
+        ]
+        for note in notes {
+            let proposal = try #require(full.phraseProposal(for: note), "\(note.pinyin)")
+            let item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: note.cleanText, proposal: proposal)
+            #expect(item.replacementText == "学习市集 · xuéxí shìjí · study fair")
+            #expect(item.annotationText == "(xuéxí shìjí)")
+            var line = RecognizedLine(text: note.cleanText, bounds: .zero)
+            line.resolved = note
+            #expect(FlashcardExtractor.extract(from: line, lexicon: Lexicon.shared)?.back == "xuéxí shìjí — study fair")
+        }
+    }
+
+    @Test func suggestAbstainsRatherThanGuessOrLoseEnglish() {
+        let written = ResolvedField(value: "xue xi shi ji", status: .confirmed)
+        let english = ResolvedField(value: "study fair", status: .confirmed)
+        // Nothing missing; English that could not be read; Pinyin nowhere near; an undecided tone (好).
+        #expect(full.phraseProposal(for: phraseNote(.init(value: "xuéxí shìjí", status: .confirmed), english)) == nil)
+        #expect(full.phraseProposal(for: phraseNote(written, .init(value: nil, status: .unresolved))) == nil)
+        #expect(full.phraseProposal(for: phraseNote(.init(value: "da meng", status: .tentative), english)) == nil)
+        var undecided = phraseNote(.init(value: "hao", status: .confirmed), english)
+        undecided.hanzi.value = "好"
+        #expect(full.phraseProposal(for: undecided) == nil)
+        // No English written: none is made up.
+        #expect(full.phraseProposal(for: phraseNote(written, .absent))?.candidates.first?.gloss == "")
+    }
+
     @Test func misreadPinyinAtTheStartOfALineIsFoundByTheHanzisReading() {
         let words = ["none", "fu", "she", "ji", "farmers", "market"]
         #expect(StarterVocabulary.leadingRun(of: words, near: "nongfushiji")?.count == 4)

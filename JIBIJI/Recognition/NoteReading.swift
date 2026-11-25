@@ -80,7 +80,8 @@ enum NoteReading {
                 }
             }
             if let read, !read.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { reads[cell.strokeIndices] = read }
-            readings.append(.init(cell: cell, text: read?.text))
+            let engines = (read?.evidence ?? []).filter { !$0.alternate && $0.engine != .other }.map { ($0.engine.rawValue, $0.text) }
+            readings.append(.init(cell: cell, text: read?.text, engines: Dictionary(engines, uniquingKeysWith: { first, _ in first })))
         }
         try Task.checkCancellation()
         #if DEBUG
@@ -95,11 +96,14 @@ enum NoteReading {
                 // field's strokes together (`hǎo` + `xiang`), read by every engine before anything is decided.
                 for kind in NoteGrouping.FieldKind.allCases {
                     guard let field = entry.field(kind) else { continue }
+                    // Pinyin and English on the same strokes are one run of writing: read once, as a line.
+                    let sharesPinyinInk = kind != .hanzi && entry.pinyin?.strokeIndices == entry.english?.strokeIndices
+                    if sharesPinyinInk, kind == .english { continue }
                     // A field that is one cell was already read as that cell; reading it again would only count one reading twice.
                     let members = cells.filter { !$0.strokeIndices.isEmpty && Set($0.strokeIndices).isSubset(of: Set(field.strokeIndices)) }
                     guard members.count > 1 else { continue }
                     let strokes = field.strokeIndices.map { drawing.strokes[$0] }
-                    for var reading in try await readRegion(strokes) { reading.scope = .field; reading.field = kind; evidence.append(reading) }
+                    for var reading in try await readRegion(strokes) { reading.scope = .field; reading.field = sharesPinyinInk ? nil : kind; evidence.append(reading) }
                 }
                 if entry.fields.count > 1 || entry.strokeIndices.count > 1 {
                     let strokes = entry.strokeIndices.map { drawing.strokes[$0] }
