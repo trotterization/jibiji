@@ -83,3 +83,9 @@ Fixed, with tests:
 
 Not changed: `UITextChecker` off the main thread (see State); the Pinyin-only repair costs about 0.3 s per line in Debug builds on the main thread (about 10 ms optimized).
 - **Replace size**: replacement text is written at the height of the handwriting it replaces and may extend to the right (up to 640 pt) instead of being shrunk into the short source word's box.
+
+## 2026-11-25: latest state
+
+- `task/recognition-repair` is at `45e6f1c` (PR #28). `task/replace-missing-fields` is stacked on it for issue #29.
+- Tests: run on a clean iPad Air 11-inch (M4) Simulator. The long "launch hang" was the app install stalling on one Simulator device (cause unknown); on a newly created one the whole unit suite takes under a minute.
+- Private replays: `JIBIJITests/LocalDeviceInkTests.swift` reads ink, readings and expected results from `jibiji-device-evidence-private/replays`, outside the repository.

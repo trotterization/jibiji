@@ -116,7 +116,7 @@ final class NotePageModel {
 
     /// Accept a reading as actual, erasable ink in the source region.
     @discardableResult
-    func replaceSuggestion(_ id: UUID, with text: String) -> Bool {
+    func replaceSuggestion(_ id: UUID, with text: String, pageWidth: CGFloat = InlineReplacement.defaultPageWidth) -> Bool {
         guard isEditable, let item = suggestions.pending.first(where: { $0.id == id }) else { return false }
         // Replace is the student's call; an uncertain reading shows its caveat on the chip and Restore undoes it.
         guard item.allowsInkReplacement else {
@@ -128,6 +128,10 @@ final class NotePageModel {
         guard !indices.isEmpty else {
             notice = "Couldn't match this suggestion to the original strokes. Try reading the page again."
             return false
+        }
+        // The unedited suggestion is written in place: only what is missing, around the student's own strokes.
+        if cleanText == item.cleanText, let plan = InlineReplacement.plan(for: item, in: drawing, pageWidth: pageWidth) {
+            return complete(item, with: plan, text: cleanText)
         }
         let originals = indices.map { drawing.strokes[$0] }
         let sourceBounds = originals.dropFirst().reduce(originals[0].renderBounds) { $0.union($1.renderBounds) }
@@ -152,6 +156,24 @@ final class NotePageModel {
         return true
     }
 
+    private func complete(_ item: PendingSuggestion, with plan: InlineReplacement.Plan, text: String) -> Bool {
+        let ids = drawing.strokes.map(InkSelection.identity)
+        let removed = drawing.strokes.indices.filter { plan.removed.contains(ids[$0]) }
+        let touched = drawing.strokes.indices.filter { item.sourceStrokeIDs.contains(ids[$0]) }.map { drawing.strokes[$0] } + plan.added
+        let bounds = touched.reduce(CGRect.null) { $0.union($1.renderBounds) }
+        let recovery = InkReplacement(originalInk: PKDrawing(strokes: removed.map { drawing.strokes[$0] }).dataRepresentation(),
+                                      originalIndices: removed,
+                                      replacementStrokeIDs: Set(plan.added.map(InkSelection.identity)),
+                                      keptStrokeIDs: plan.kept)
+        let remaining = suggestions.pending.filter { $0.id != item.id }
+        guard suggestions.acceptReplacement(item, text: text, bounds: bounds, recovery: recovery) else { return false }
+        let gone = Set(removed)
+        drawingDidChange(PKDrawing(strokes: drawing.strokes.enumerated().filter { !gone.contains($0.offset) }.map(\.element) + plan.added))
+        suggestions.keepUnchangedPending(remaining, excluding: bounds)
+        saveIfNeeded()
+        return true
+    }
+
     /// Recovery works after relaunch and preserves ink added after the replacement.
     @discardableResult
     func restoreOriginal(_ noteID: UUID) -> Bool {
@@ -171,6 +193,11 @@ final class NotePageModel {
 
     func deleteReplacement(_ id: UUID) {
         guard let note = suggestions.annotations.first(where: { $0.id == id }), let replacement = note.replacement else { return }
+        // What was added around the student's writing is taken away again; their own ink is never deleted with it.
+        if replacement.isInline {
+            restoreOriginal(id)
+            return
+        }
         drawingDidChange(PKDrawing(strokes: drawing.strokes.filter { !replacement.replacementStrokeIDs.contains(InkSelection.identity($0)) }))
         saveIfNeeded()
     }
@@ -288,7 +315,14 @@ extension Logger {
 /// Deterministic UI-test provider, restricted to disposable test notebooks.
 private struct ReplacementFixtureReader: InkLineReader {
     func lines(in drawing: PKDrawing) async throws -> [RecognizedLine] {
-        drawing.strokes.isEmpty ? [] : [RecognizedLine(text: "大", bounds: drawing.bounds, readings: ["大", "牛", "我"])]
+        guard !drawing.strokes.isEmpty else { return [] }
+        var line = RecognizedLine(text: "大", bounds: drawing.bounds, readings: ["大", "牛", "我"])
+        if UserDefaults.standard.bool(forKey: "JIBIJIInPlaceFixture") {
+            line.strokeIndices = Array(drawing.strokes.indices)
+            line.fieldStrokes = [.hanzi: Array(drawing.strokes.indices)]
+            line.resolved = ResolvedNote(hanzi: .init(value: "大", status: .confirmed), pinyin: .absent, english: .absent, diagnostics: [])
+        }
+        return [line]
     }
 }
 #endif

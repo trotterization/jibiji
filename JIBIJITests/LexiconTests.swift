@@ -305,6 +305,23 @@ import Testing
         #expect(!other.contains { $0.hanzi != nil && $0.pinyin != nil })
     }
 
+    @Test func untonedPinyinInPiecesJoinsWhenItSpellsAWordBeginningWithTheHanzi() throws {
+        func entries(_ hanzi: String, _ words: [String]) -> [NoteGrouping.Entry] {
+            func cell(_ x: CGFloat, _ width: CGFloat, _ stroke: Int) -> NoteLayout.CellCandidate {
+                .init(strokeIndices: [stroke], bounds: CGRect(x: x, y: 100, width: width, height: 60), column: 0, scale: 40, gapBefore: nil)
+            }
+            return NoteGrouping.entries(from: [.init(cell: cell(100, 70, 0), text: hanzi)]
+                + words.enumerated().map { .init(cell: cell(260 + CGFloat($0) * 110, 80, $0 + 1), text: $1) })
+        }
+        let note = entries("好", ["hao", "xiang"])
+        #expect(note.count == 1)
+        #expect(note.first?.pinyin?.text == "hao xiang")
+        #expect(note.first?.pinyin?.strokeIndices == [1, 2])
+        #expect(note.first?.english == nil)
+        // `he` beside 他 tā is English: no word is spelled `tahe`.
+        #expect(entries("他", ["ta", "he"]).first?.english?.text == "he")
+    }
+
     @Test func pinyinOfTheNotesOwnHanziIsNeverItsEnglish() throws {
         // `dian` passes a spell checker; beside 电脑 it is Pinyin, even when every engine agrees.
         func field(_ text: String, _ strokes: [Int]) -> NoteGrouping.Field { .init(text: text, cellText: text, strokeIndices: strokes, bounds: .zero) }

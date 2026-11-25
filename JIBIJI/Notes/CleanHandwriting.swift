@@ -43,7 +43,51 @@ enum CleanHandwriting {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 200, !text.contains("\n"), !text.contains("\r"),
               target.width > 1, target.height > 1,
               [target.minX, target.minY, target.width, target.height].allSatisfy(\.isFinite) else { return nil }
-        let emSize: CGFloat = 64
+        let paths = glyphPaths(text)
+        guard let first = paths.first else { return nil }
+        let bounds = paths.dropFirst().reduce(first.boundingBoxOfPath) { $0.union($1.boundingBoxOfPath) }
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let scale = maxWidth.map { min(target.height / bounds.height, max($0, target.width) / bounds.width) }
+            ?? min(target.width / bounds.width, target.height / bounds.height)
+        return write(paths, scale: scale, at: CGPoint(x: target.minX - bounds.minX * scale, y: target.minY + bounds.maxY * scale), pen: pen)
+    }
+
+    private static let emSize: CGFloat = 64
+
+    /// `text` with its baseline at `baseline.y` and its ink starting at `baseline.x`, one em tall being `em` points.
+    /// `squeeze` under 1 makes it narrower without making it shorter.
+    static func drawing(text: String, baseline: CGPoint, em: CGFloat, pen: Pen, squeeze: CGFloat = 1) -> PKDrawing? {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 200, em.isFinite, em > 1,
+              baseline.x.isFinite, baseline.y.isFinite else { return nil }
+        let paths = glyphPaths(text)
+        guard let first = paths.first else { return nil }
+        let minX = paths.dropFirst().reduce(first.boundingBoxOfPath) { $0.union($1.boundingBoxOfPath) }.minX
+        let scale = em / emSize
+        return write(paths, scale: scale, at: CGPoint(x: baseline.x - minX * scale * squeeze, y: baseline.y), pen: pen, squeeze: squeeze)
+    }
+
+    /// The ink of `text` at `em`, y growing downward: its left edge at 0 and its baseline at 0.
+    static func bounds(of text: String, em: CGFloat) -> CGRect? {
+        let paths = glyphPaths(text)
+        guard let first = paths.first else { return nil }
+        let box = paths.dropFirst().reduce(first.boundingBoxOfPath) { $0.union($1.boundingBoxOfPath) }
+        let scale = em / emSize
+        return CGRect(x: 0, y: -box.maxY * scale, width: box.width * scale, height: box.height * scale)
+    }
+
+    /// Where each character of `text` starts, and where the last one ends, in font units.
+    static func offsets(in text: String) -> [CGFloat] {
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font(size: emSize)]))
+        var index = 0
+        var result: [CGFloat] = [0]
+        for character in text {
+            index += String(character).utf16.count
+            result.append(CTLineGetOffsetForStringIndex(line, index, nil))
+        }
+        return result
+    }
+
+    private static func glyphPaths(_ text: String) -> [CGPath] {
         let attributed = NSAttributedString(string: text, attributes: [.font: font(size: emSize)])
         let line = CTLineCreateWithAttributedString(attributed)
         var paths: [CGPath] = []
@@ -54,22 +98,19 @@ enum CleanHandwriting {
             CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
             CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
             let attrs = CTRunGetAttributes(run) as NSDictionary
-            guard let runFont = attrs[kCTFontAttributeName] else { return nil }
+            guard let runFont = attrs[kCTFontAttributeName] else { return [] }
             let ctFont = runFont as! CTFont
             for i in 0..<count {
-                guard let path = CTFontCreatePathForGlyph(ctFont, glyphs[i], nil) else { continue }
+                guard let path = CTFontCreatePathForGlyph(ctFont, glyphs[i], nil), !path.boundingBoxOfPath.isNull else { continue }
                 var translation = CGAffineTransform(translationX: positions[i].x, y: positions[i].y)
                 if let moved = path.copy(using: &translation) { paths.append(moved) }
             }
         }
-        guard let first = paths.first else { return nil }
-        let bounds = paths.dropFirst().reduce(first.boundingBoxOfPath) { $0.union($1.boundingBoxOfPath) }
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
-        let scale = maxWidth.map { min(target.height / bounds.height, max($0, target.width) / bounds.width) }
-            ?? min(target.width / bounds.width, target.height / bounds.height)
-        var transform = CGAffineTransform(a: scale, b: 0, c: 0, d: -scale,
-                                         tx: target.minX - bounds.minX * scale,
-                                         ty: target.minY + bounds.maxY * scale)
+        return paths
+    }
+
+    private static func write(_ paths: [CGPath], scale: CGFloat, at origin: CGPoint, pen: Pen, squeeze: CGFloat = 1) -> PKDrawing? {
+        var transform = CGAffineTransform(a: scale * squeeze, b: 0, c: 0, d: -scale, tx: origin.x, ty: origin.y)
         // About 150 pixels per em: enough detail for dense characters, small enough to be quick.
         let pixelsPerPoint = 150 / (emSize * scale)
         let strokes = paths.flatMap { path -> [PKStroke] in
@@ -80,7 +121,7 @@ enum CleanHandwriting {
         return strokes.isEmpty ? nil : try? PKDrawing(data: PKDrawing(strokes: strokes).dataRepresentation())
     }
 
-    private static func stroke(_ points: [CGPoint], pen: Pen) -> PKStroke {
+    static func stroke(_ points: [CGPoint], pen: Pen) -> PKStroke {
         let samples = points.enumerated().map { index, point in
             PKStrokePoint(location: point, timeOffset: TimeInterval(index) * 0.008,
                           size: CGSize(width: pen.width, height: pen.width), opacity: 1, force: 1,
@@ -265,7 +306,11 @@ enum GlyphSkeleton {
             if path.count < minLength, head != nil || tail != nil { return }
             if let tail { path.append(tail) }
             if let head { path.insert(head, at: 0) }
-            if path.count >= 2 { lines.append(path.map(point)) } else { lines.append([point(start), point(start)]) }
+            if path.count >= 2 { lines.append(path.map(point)) } else { 
+                // A dot (of `;` or `i`): PencilKit draws nothing for a line of no length.
+                let dot = point(start)
+                lines.append([CGPoint(x: dot.x - 1, y: dot.y), dot, CGPoint(x: dot.x + 1, y: dot.y)])
+             }
         }
 
         for start in ends where !visited[start] { walk(from: start) }
@@ -316,4 +361,8 @@ struct InkReplacement: Codable, Equatable {
     var originalInk: Data
     var originalIndices: [Int]
     var replacementStrokeIDs: Set<String>
+    /// Set when only what was missing was written: the student's own strokes that stay on the page and are part of the
+    /// confirmed note. Nil for a replacement of the whole line.
+    var keptStrokeIDs: Set<String>? = nil
+    var isInline: Bool { keptStrokeIDs != nil }
 }

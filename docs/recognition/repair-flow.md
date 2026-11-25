@@ -49,3 +49,13 @@ There is no general dictionary and no semantic AI check. Validity checks above s
 
 - Real handwriting accuracy is only established by device runs. Simulator PencilKit has no Chinese; injected-reader tests prove the logic, not recognition.
 - PaddleOCR mobile exists only in Debug builds (`#if DEBUG`), where the local models are present.
+
+## Replace in place (issue #29)
+
+Replacing the unedited first suggestion writes only what the note is missing, around the student's own strokes (`InlineReplacement`):
+
+- **Hanzi** that is missing goes after the Hanzi that is there, at its measured size; it may be made narrower to fit. With only Pinyin written, the word goes in front of it.
+- **Tone marks** are drawn over the student's own letters. Decision: overlay, not redraw. Pinyin read a letter or two wrong, but with the same number of letters, also keeps the student's writing (the readers are far more often wrong than the student). Pinyin with wrong tones or a different number of letters is rewritten, and only the Pinyin.
+- **English** follows the Pinyin at its size, or goes under the note when the line is full.
+- Nothing is written over other ink or past the page. When the fields cannot be told apart or there is no room for the Hanzi, the whole line is replaced as before. Edited text and alternatives also replace the whole line.
+- `InkReplacement.keptStrokeIDs` records the student's strokes the note stands on. They are confirmed with it, so Suggest and Cards do not read them again, until any of them changes. Restore removes what was added and brings back any rewritten Pinyin; Delete does the same, so the student's ink is never deleted with it.

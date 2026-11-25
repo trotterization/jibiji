@@ -230,6 +230,9 @@ enum NoteReading {
         #endif
         var line = RecognizedLine(text: resolved.cleanText, bounds: entry.bounds)
         line.strokeIndices = entry.strokeIndices
+        line.fieldStrokes = Dictionary(uniqueKeysWithValues: NoteGrouping.FieldKind.allCases.compactMap { kind in
+            entry.field(kind).map { (kind, $0.strokeIndices) }
+        })
         line.resolved = resolved
         line.alsoRead = [entry.text]
         // Raw OCR readings are diagnostics (`resolved.diagnostics`). They are not "other readings" and not alternatives.

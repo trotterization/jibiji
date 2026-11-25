@@ -23,6 +23,8 @@ struct RecognizedLine: Sendable, Equatable {
     /// When the line is a grouped note: the indices (in the drawing the reader was given) of exactly the strokes
     /// it was read from. Nil for a line read by bounds alone.
     var strokeIndices: [Int]? = nil
+    /// For a grouped note, the strokes of each field, as the grouping filed them. Fields may share strokes.
+    var fieldStrokes: [NoteGrouping.FieldKind: [Int]]? = nil
     /// The validated Hanzi / Pinyin / English of a grouped note. Suggest and cards both read this, nothing else.
     var resolved: ResolvedNote? = nil
     /// Other texts this note was known by (the grouping's own composed reading), so notes accepted by text still match.
@@ -214,6 +216,8 @@ struct PendingSuggestion: Identifiable, Equatable {
     var proposal: SuggestionProposal
     var selectedIndex = 0
     var sourceStrokeIDs: Set<String> = []
+    /// Where each field is written, when known: lets Replace add only what is missing.
+    var fieldInk: FieldInk? = nil
     /// Why this line's reading is uncertain beyond its Pinyin (e.g. two recognizers disagree). Never edits ink.
     var readingNote: String? = nil
     var inkEditSuppressed = false
@@ -421,6 +425,13 @@ final class PageSuggestionModel {
         return drawing.strokes.contains { $0.renderBounds.intersects(note.anchor) }
     }
 
+    /// A replacement whose handwriting is all still there. One completed in place stands on the student's own strokes; when
+    /// any of those changes, the note no longer speaks for them and they are read again.
+    nonisolated static func isCurrent(_ note: AcceptedAnnotation, strokeIDs: Set<String>) -> Bool {
+        guard let replacement = note.replacement, let kept = replacement.keptStrokeIDs else { return false }
+        return kept.isSubset(of: strokeIDs) && !replacement.replacementStrokeIDs.isDisjoint(with: strokeIDs)
+    }
+
     /// The page is no longer shown: drop pending suggestions and any running request. Accepted notes stay.
     func cancelPending() {
         #if DEBUG
@@ -481,9 +492,12 @@ final class PageSuggestionModel {
     /// line's bounds still locate the original region on the page.
     nonisolated static func readableInk(_ drawing: PKDrawing, strokeIDs: [String]? = nil,
                                         excluding annotations: [AcceptedAnnotation]) -> PKDrawing {
-        let generated = annotations.reduce(into: Set<String>()) { $0.formUnion($1.replacement?.replacementStrokeIDs ?? []) }
+        var generated = annotations.reduce(into: Set<String>()) { $0.formUnion($1.replacement?.replacementStrokeIDs ?? []) }
         guard !generated.isEmpty else { return drawing }
         let ids = strokeIDs ?? drawing.strokes.map(InkSelection.identity)
+        // Handwriting a note was completed around is confirmed with it, until any of it is changed or erased.
+        let present = Set(ids)
+        for note in annotations where isCurrent(note, strokeIDs: present) { generated.formUnion(note.replacement?.keptStrokeIDs ?? []) }
         let kept = drawing.strokes.indices.filter { !generated.contains(ids[$0]) }.map { drawing.strokes[$0] }
         return kept.count == drawing.strokes.count ? drawing : PKDrawing(strokes: kept)
     }
@@ -602,6 +616,7 @@ final class PageSuggestionModel {
                 return PendingSuggestion(revision: revision, anchor: line.bounds, recognizedText: line.text,
                                          sourceText: line.sourceText, proposal: proposal,
                                          sourceStrokeIDs: sourceIDs,
+                                         fieldInk: Self.fieldInk(of: line, ids: readableIDs),
                                          readingNote: readingNote, inkEditSuppressed: suppressInk)
             }
             // Only when nothing else was offered, so it never sits beside working suggestions looking like a failure.
@@ -621,6 +636,18 @@ final class PageSuggestionModel {
                 status = pending.isEmpty ? .message("No clear reading found. Try a smaller group of words or clearer spacing. Your ink is unchanged.") : .idle
             }
         }
+    }
+
+    /// The strokes of each field of a grouped note, by identity.
+    nonisolated static func fieldInk(of line: RecognizedLine, ids: [String]) -> FieldInk? {
+        guard let fields = line.fieldStrokes, let resolved = line.resolved else { return nil }
+        func strokes(_ kind: NoteGrouping.FieldKind) -> Set<String> {
+            Set((fields[kind] ?? []).filter(ids.indices.contains).map { ids[$0] })
+        }
+        return FieldInk(hanzi: strokes(.hanzi), pinyin: strokes(.pinyin), english: strokes(.english),
+                        hanziText: resolved.hanzi.value, pinyinText: resolved.pinyin.isUsable ? resolved.pinyin.value : nil,
+                        englishText: resolved.english.isUsable ? resolved.english.value : nil,
+                        pinyinWritten: resolved.pinyin.status != .absent)
     }
 
     nonisolated static func noMatchMessage(_ readings: [String]) -> String {
@@ -737,6 +764,7 @@ final class PageSuggestionModel {
             return PendingSuggestion(revision: revision, anchor: item.anchor, recognizedText: item.recognizedText,
                                         sourceText: item.sourceText, proposal: item.proposal,
                                         selectedIndex: item.selectedIndex, sourceStrokeIDs: item.sourceStrokeIDs,
+                                        fieldInk: item.fieldInk,
                                         readingNote: item.readingNote, inkEditSuppressed: item.inkEditSuppressed)
         }
     }
