@@ -84,6 +84,13 @@ Fixed, with tests:
 Not changed: `UITextChecker` off the main thread (see State); the Pinyin-only repair costs about 0.3 s per line in Debug builds on the main thread (about 10 ms optimized).
 - **Replace size**: replacement text is written at the height of the handwriting it replaces and may extend to the right (up to 640 pt) instead of being shrunk into the short source word's box.
 
+## 2026-11-26: Replace fixes only what is wrong; iPad evidence replays
+
+- iPad test of in-place Replace (build f5c8537): 像 placed and sized correctly. Two problems, both fixed: the student's Pinyin was rewritten because one tone mark was the wrong tone, and the English went under the note. Now only the wrong mark is swapped and the English stays on the line. Checked on the saved iPad ink locally.
+- Pinyin cut short gets only its missing syllables.
+- Debug builds save every reading to `Documents/replays/` (`ReadingRecorder`). `scripts/pull-ipad-evidence.sh` copies notes, trace and replays to `../jibiji-device-evidence-private/ipad/`. `IPadReplayTests` replays them with the iPad's own readings; `IPadPagesTests` (`TEST_RUNNER_JIBIJI_ALL_PAGES=1`, about 2 minutes) reads every saved page with the Simulator's readers. Both write a report beside the repository and fail only on broken promises.
+- Logged: issue #32 (cosmetic) zoomed-out drawing area and dot grid.
+
 ## 2026-11-25: latest state
 
 - `task/recognition-repair` is at `45e6f1c` (PR #28). `task/replace-missing-fields` is stacked on it for issue #29.

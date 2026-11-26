@@ -16,7 +16,8 @@ struct FieldInk: Equatable, Sendable {
 }
 
 /// Replace, done in place: the student's strokes stay, and only what the note is missing is written beside them at the
-/// size of the writing it belongs to. Pinyin is rewritten only when its letters or tones differ from the word's.
+/// size of the writing it belongs to. Wrong or missing tone marks are fixed on the student's own letters; the Pinyin is
+/// rewritten only when its letters are not the word's. The English goes on the note's line, never under it.
 ///
 /// Nil when the fields cannot be told apart or there is no room; the caller then replaces the whole line, as before.
 @MainActor
@@ -61,17 +62,18 @@ enum InlineReplacement {
         // Everything that stays on the page is in the way, and so is whatever has been added.
         var obstacles = all.map { (id: $0.id, rect: pathBounds([$0.stroke])) }
         let limit = max(pageWidth - 16, drawing.bounds.maxX + 24)
-        func isFree(_ rect: CGRect) -> Bool {
-            rect.minX >= 4 && rect.minY >= 4 && rect.maxX <= limit
+        func isFree(_ rect: CGRect, unbounded: Bool = false) -> Bool {
+            rect.minX >= 4 && rect.minY >= 4 && (unbounded || rect.maxX <= limit)
                 && !obstacles.contains { !removed.contains($0.id) && $0.rect.intersects(rect.insetBy(dx: -2, dy: -1)) }
         }
-        /// Writes `text` with its left edge at `x`, a little smaller if it has to be. Nil when it does not fit.
+        /// Writes `text` with its left edge at `x`, a little smaller if it has to be. Nil when it does not fit. `unbounded`
+        /// lets it run past the right edge of the view; the page widens to fit ink.
         func write(_ text: String, x: CGFloat, baseline: CGFloat, em: CGFloat, pen: CleanHandwriting.Pen,
-                   scales: [CGFloat] = [1, 0.85, 0.7], squeezes: [CGFloat] = [1]) -> CGRect? {
+                   scales: [CGFloat] = [1, 0.85, 0.7], squeezes: [CGFloat] = [1], unbounded: Bool = false) -> CGRect? {
             for (scale, squeeze) in scales.flatMap({ scale in squeezes.map { (scale, $0) } }) {
                 guard var box = CleanHandwriting.bounds(of: text, em: em * scale)?.offsetBy(dx: x, dy: baseline) else { continue }
                 box.size.width *= squeeze
-                guard isFree(box), let piece = CleanHandwriting.drawing(text: text, baseline: CGPoint(x: x, y: baseline), em: em * scale,
+                guard isFree(box, unbounded: unbounded), let piece = CleanHandwriting.drawing(text: text, baseline: CGPoint(x: x, y: baseline), em: em * scale,
                                                                         pen: pen, squeeze: squeeze) else { continue }
                 added += piece.strokes
                 obstacles.append((id: "", rect: box))
@@ -80,33 +82,55 @@ enum InlineReplacement {
             return nil
         }
 
-        // 1. Pinyin that is there: add its tone marks, or rewrite it when the letters or tones are not the word's.
+        // 1. Pinyin that is there: only its tone marks are fixed, on the student's own letters. A missing mark is added and
+        //    a wrong one is taken off and written correctly; the letters stay. Pinyin cut short (`hǎo` for hǎoxiàng) gets the
+        //    syllables it is missing written after it. Rewritten only when the letters are not the word's.
         if var measured = pinyin {
             let pen = CleanHandwriting.Pen.matching(fields.pinyin)
             var rewrite = false
-            switch item.proposal.pinyinState {
-            case .correct: break
-            case .missingTones:
-                if let marks = toneMarks(written: ink.pinyinText ?? "", target: candidate.pinyin, strokes: fields.pinyin, em: measured.em, pen: pen) {
-                    added += marks
-                    obstacles += marks.map { (id: "", rect: pathBounds([$0])) }
-                } else {
-                    rewrite = true
+            func fixTones(written: String) -> Bool {
+                // The part of the word that was written, and the syllables that were left off.
+                let (head, tail) = Self.divide(candidate.pinyin, after: Lexicon.foldedLetters(written))
+                guard let fix = toneMarks(written: written, target: head, strokes: fields.pinyin, em: measured.em, pen: pen)
+                else {
+                    #if DEBUG
+                    DebugTrace.log("replace: tone marks of “\(written)” could not be fixed in place; the Pinyin is rewritten")
+                    #endif
+                    return false
                 }
+                removed.formUnion(fix.wrong.map(InkSelection.identity))
+                added += fix.marks
+                obstacles += fix.marks.map { (id: "", rect: pathBounds([$0])) }
+                if !tail.isEmpty {
+                    guard let box = write(tail, x: measured.bounds.maxX + 0.12 * measured.em, baseline: measured.end, em: measured.em, pen: pen, scales: [1, 0.85])
+                    else { return false }
+                    measured.bounds = measured.bounds.union(box)
+                    pinyin = measured
+                }
+                return true
+            }
+            switch item.proposal.pinyinState {
+            case .correct:
+                // Right as far as it goes; it may stop short of the word.
+                if let read = ink.pinyinText, Lexicon.foldedLetters(read).count < plainPinyin.count { rewrite = !fixTones(written: read) }
+            case .missingTones, .wrongTones:
+                rewrite = !fixTones(written: ink.pinyinText ?? "")
             case .possibleSpelling(let read):
                 // Read with a letter or two wrong. Far more often the readers' mistake than the student's, so where the
                 // letters correspond one to one the marks go on the student's own writing; otherwise it is rewritten.
-                if let spelled = respelled(read, as: candidate.pinyin),
-                   let marks = toneMarks(written: spelled, target: candidate.pinyin, strokes: fields.pinyin, em: measured.em, pen: pen), !marks.isEmpty {
-                    added += marks
-                    obstacles += marks.map { (id: "", rect: pathBounds([$0])) }
+                // Cut short of the word (`hao` for hǎoxiàng) is read this way too: the marks go on it, and the rest after it.
+                if !Self.divide(candidate.pinyin, after: Lexicon.foldedLetters(read)).tail.isEmpty {
+                    rewrite = !fixTones(written: read)
                 } else {
-                    rewrite = true
+                    rewrite = !(respelled(read, as: candidate.pinyin).map(fixTones) ?? false)
                 }
-            case .notWritten, .wrongTones: rewrite = true
+            case .notWritten: rewrite = true
             }
             if rewrite {
-                removed.formUnion(fields.pinyin.map(InkSelection.identity))
+                // Anything step 1 added is taken back first.
+                added.removeAll()
+                removed = Set(fields.pinyin.map(InkSelection.identity))
+                obstacles = all.map { (id: $0.id, rect: pathBounds([$0.stroke])) }
                 guard let box = write(candidate.pinyin, x: measured.bounds.minX, baseline: measured.baseline, em: measured.em, pen: pen)
                 else { return none("no room for the Pinyin") }
                 measured.end = measured.baseline
@@ -154,22 +178,24 @@ enum InlineReplacement {
             pinyin = Measure(bounds: box, baseline: line, end: line, em: em)
         }
 
-        // 4. English that is missing, after the note at the size of the Pinyin, or under it when the line is full.
+        // 4. English that is missing, on the note's line after the Pinyin, at the Pinyin's size. The page widens to fit, so
+        //    it may run past the right edge; it moves past other writing in its way, and is never put under the note.
         if english == nil, !candidate.gloss.isEmpty, let pinyin {
             let pen = CleanHandwriting.Pen.matching(fields.pinyin.isEmpty ? fields.hanzi : fields.pinyin)
             let pieces = [hanziEnd, pinyin.bounds].compactMap { $0 }
             let onLine = pieces.filter { $0.minY < pinyin.end && $0.maxY > pinyin.end - pinyin.em }
-            let x = (onLine.map(\.maxX).max() ?? pinyin.bounds.maxX) + 0.6 * pinyin.em
-            let whole = pathBounds(noteStrokes.filter { !removed.contains(InkSelection.identity($0)) }).union(pinyin.bounds).union(hanziEnd ?? pinyin.bounds)
-            if write(candidate.gloss, x: x, baseline: pinyin.end, em: pinyin.em, pen: pen, scales: [1, 0.85]) == nil {
-                // Under the note, broken into lines when it is long.
-                var baseline = whole.maxY + 1.2 * pinyin.em
-                for line in wrapped(candidate.gloss, em: pinyin.em, width: limit - whole.minX) {
-                    guard write(line, x: whole.minX, baseline: baseline, em: pinyin.em, pen: pen, scales: [1, 0.85, 0.7]) != nil
-                    else { return none("no room for the English") }
-                    baseline += 1.25 * pinyin.em
-                }
+            var x = (onLine.map(\.maxX).max() ?? pinyin.bounds.maxX) + 0.6 * pinyin.em
+            var box: CGRect?
+            for _ in 0..<8 {
+                box = write(candidate.gloss, x: x, baseline: pinyin.end, em: pinyin.em, pen: pen, scales: [1], unbounded: true)
+                guard box == nil, let shape = CleanHandwriting.bounds(of: candidate.gloss, em: pinyin.em)?.offsetBy(dx: x, dy: pinyin.end)
+                else { break }
+                // Past whatever is in the way on the line.
+                let blocking = obstacles.filter { !removed.contains($0.id) && $0.rect.intersects(shape.insetBy(dx: -2, dy: -1)) }
+                guard let right = blocking.map(\.rect.maxX).max(), right + 0.6 * pinyin.em > x else { break }
+                x = right + 0.6 * pinyin.em
             }
+            guard box != nil else { return none("no room for the English on its line") }
         }
 
         guard !added.isEmpty, let canonical = try? PKDrawing(data: PKDrawing(strokes: added).dataRepresentation()),
@@ -257,8 +283,11 @@ enum InlineReplacement {
 
     // MARK: - Tone marks over the student's own letters
 
-    /// The tone marks `target` has and `written` does not, drawn above the letters they belong to. Nil when the letters differ.
-    static func toneMarks(written: String, target: String, strokes: [PKStroke], em: CGFloat, pen: CleanHandwriting.Pen) -> [PKStroke]? {
+    /// Fixes the tone marks of `written` to be `target`'s, on the student's own letters: `marks` are drawn above the letters
+    /// they belong to, and `wrong` are the student's marks that come off (a different tone, or a mark where none belongs).
+    /// A mark that is there and right stays. Nil when the letters differ, or a wrong mark cannot be found in the ink.
+    static func toneMarks(written: String, target: String, strokes: [PKStroke], em: CGFloat, pen: CleanHandwriting.Pen)
+        -> (marks: [PKStroke], wrong: [PKStroke])? {
         let marks: [UInt32: Int] = [0x0304: 1, 0x0301: 2, 0x030C: 3, 0x0300: 4]
         func letters(_ text: String) -> [(base: String, tone: Int?)] {
             text.precomposedStringWithCanonicalMapping.compactMap { character in
@@ -274,25 +303,49 @@ enum InlineReplacement {
         let groups = separated.map { zip(words, $0).map { (text: $0.0, strokes: $0.1) } } ?? [(text: words.joined(separator: " "), strokes: strokes)]
 
         var result: [PKStroke] = []
+        var wrong: [PKStroke] = []
         var index = 0
         for group in groups {
             let box = pathBounds(group.strokes)
+            // The student's own tone marks: small strokes that sit wholly above the letters. Not an i's dot, which is tinier.
+            let feet = group.strokes.map { pathBounds([$0]).maxY }.sorted()
+            let baseline = feet[feet.count / 2]
+            let isMark: (CGRect) -> Bool = { r in
+                r.maxY < baseline - 0.3 * em && max(r.width, r.height) >= 0.15 * em && r.width <= 0.8 * em && r.height <= 0.6 * em
+            }
+            let marks = group.strokes.filter { isMark(pathBounds([$0])) }
+            let body = group.strokes.filter { !isMark(pathBounds([$0])) }
+            // Letters written apart are found exactly; joined ones are placed by their share of the word's width.
             let characters = Array(group.text)
             let offsets = CleanHandwriting.offsets(in: group.text)
             guard offsets.count == characters.count + 1, let full = offsets.last, full > 0, !box.isEmpty else { return nil }
-            // Letters written apart are found exactly; joined ones are placed by their share of the word's width.
-            let apart = columns(group.strokes)
+            let apart = columns(body)
             let exact = apart.count == characters.count
-            let points = group.strokes.flatMap { stroke in
-                stroke.path.interpolatedPoints(by: .distance(2)).map { $0.location.applying(stroke.transform) }
-            }
+            let bodyBox = body.isEmpty ? box : pathBounds(body)
             for (position, character) in characters.enumerated() where !Lexicon.foldedLetters(String(character)).isEmpty {
                 defer { index += 1 }
-                guard index < want.count, let tone = want[index].tone, have[index].tone == nil else { continue }
-                let left = exact ? apart[position].minX : box.minX + box.width * offsets[position] / full
-                let right = exact ? apart[position].maxX : box.minX + box.width * offsets[position + 1] / full
+                guard index < want.count, want[index].tone != have[index].tone else { continue }
+                let left = exact ? apart[position].minX : bodyBox.minX + bodyBox.width * offsets[position] / full
+                let right = exact ? apart[position].maxX : bodyBox.minX + bodyBox.width * offsets[position + 1] / full
+                // The mark the student put over this letter, if the readers saw one there.
+                if have[index].tone != nil {
+                    let slack = 0.3 * (right - left)
+                    guard let old = marks.filter({ let r = pathBounds([$0]); return r.midX >= left - slack && r.midX <= right + slack })
+                        .min(by: { abs(pathBounds([$0]).midX - (left + right) / 2) < abs(pathBounds([$1]).midX - (left + right) / 2) })
+                    else {
+                        #if DEBUG
+                        DebugTrace.log("replace: no tone mark found in the ink over “\(character)”")
+                        #endif
+                        return nil
+                    }
+                    wrong.append(old)
+                }
+                guard let tone = want[index].tone else { continue }
+                let gone = Set(wrong.map(InkSelection.identity))
+                let points = group.strokes.filter { !gone.contains(InkSelection.identity($0)) }
+                    .flatMap { stroke in stroke.path.interpolatedPoints(by: .distance(2)).map { $0.location.applying(stroke.transform) } }
                 // The letter's own strokes say where it is; a joined word only tells by its share of the width.
-                let own = group.strokes.map { pathBounds([$0]) }.filter {
+                let own = body.map { pathBounds([$0]) }.filter {
                     $0.midX >= left - 0.2 * (right - left) && $0.midX <= right + 0.2 * (right - left) && $0.width <= 1.5 * (right - left)
                         && $0.height >= 0.2 * em
                 }.min { abs($0.midX - (left + right) / 2) < abs($1.midX - (left + right) / 2) }
@@ -317,20 +370,23 @@ enum InlineReplacement {
                 result.append(CleanHandwriting.stroke(dense(line), pen: pen))
             }
         }
-        return result
+        return (result, wrong)
     }
 
-    /// `text` broken between words into lines no wider than `width`.
-    private static func wrapped(_ text: String, em: CGFloat, width: CGFloat) -> [String] {
-        var lines: [String] = []
-        for word in text.split(separator: " ").map(String.init) {
-            if let last = lines.last, (CleanHandwriting.bounds(of: last + " " + word, em: em)?.width ?? 0) <= width {
-                lines[lines.count - 1] = last + " " + word
-            } else {
-                lines.append(word)
-            }
+    /// `target` divided after its first `letters` (tones ignored): the part written, and the syllables left off. All of
+    /// `target` and nothing left off when `letters` is not where `target` begins.
+    static func divide(_ target: String, after letters: String) -> (head: String, tail: String) {
+        let plain = Lexicon.foldedLetters(target)
+        guard !letters.isEmpty, letters.count < plain.count, plain.hasPrefix(letters) else { return (target, "") }
+        var count = 0
+        var head = ""
+        var rest = Substring(target)
+        while count < letters.count, let character = rest.first {
+            head.append(character)
+            rest = rest.dropFirst()
+            if !Lexicon.foldedLetters(String(character)).isEmpty { count += 1 }
         }
-        return lines
+        return (head, rest.trimmingCharacters(in: .whitespaces))
     }
 
     /// `target`'s letters, without tones, in the words `read` was read as, when they correspond letter for letter.

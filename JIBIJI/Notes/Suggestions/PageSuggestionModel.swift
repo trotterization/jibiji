@@ -104,14 +104,29 @@ struct PencilInkLineReader: InkLineReader {
         }
         if NoteReading.isEnabled {
             let recognizer = recognizer
-            return try await NoteReading.lines(
+            #if DEBUG
+            // What each engine read is kept with the ink, so this reading can be replayed in the Simulator.
+            let recorder = ReadingRecorder(drawing)
+            #endif
+            func read(_ strokes: [PKStroke]) async -> [NoteEvidence.Reading] {
+                let evidence = await Self.evidence(for: strokes, recognizer: recognizer)
+                #if DEBUG
+                await recorder.note(strokes, evidence)
+                #endif
+                return evidence
+            }
+            let lines = try await NoteReading.lines(
                 in: drawing,
-                readRegion: { strokes in await Self.evidence(for: strokes, recognizer: recognizer) },
+                readRegion: { strokes in await read(strokes) },
                 readCell: { strokes, _ in
-                    let evidence = await Self.evidence(for: strokes, recognizer: recognizer)
+                    let evidence = await read(strokes)
                     guard let primary = Self.primary(of: evidence) else { return nil }
                     return NoteReading.CellRead(text: primary, evidence: evidence)
                 })
+            #if DEBUG
+            await recorder.save(lines)
+            #endif
+            return lines
         }
         guard #available(iOS 27.0, *), let recognizer = recognizer as? PKStrokeRecognizer else { return try await VisionInkReader.shared.lines(in: drawing) }
         var result: [RecognizedLine] = []

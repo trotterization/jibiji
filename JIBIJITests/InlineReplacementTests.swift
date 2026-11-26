@@ -23,6 +23,27 @@ struct InlineReplacementTests {
         var em: CGFloat
         var kind: NoteGrouping.FieldKind
         var baseline: CGFloat = 220
+        /// Tone marks drawn by hand over letters: (index of the letter in `text`, tone). The typeface's own accents are specks,
+        /// far smaller than a Pencil mark, so a mark a student wrote is drawn at a hand's size instead.
+        var marks: [(letter: Int, tone: Int)] = []
+    }
+
+    /// A hand-sized tone mark over letter `index` of `text` written at `x`, `baseline`, `em`.
+    static func handMark(over index: Int, of text: String, x: CGFloat, baseline: CGFloat, em: CGFloat, tone: Int) -> PKStroke {
+        let left = index == 0 ? 0 : CleanHandwriting.bounds(of: String(text.prefix(index)), em: em)?.maxX ?? 0
+        let right = CleanHandwriting.bounds(of: String(text.prefix(index + 1)), em: em)?.maxX ?? left
+        let mid = x + (left + right) / 2
+        let y = baseline - 0.8 * em, w = 0.16 * em, h = 0.12 * em
+        let ends: [CGPoint]
+        switch tone {
+        case 1: ends = [CGPoint(x: mid - w, y: y), CGPoint(x: mid + w, y: y)]
+        case 2: ends = [CGPoint(x: mid - w, y: y + h), CGPoint(x: mid + w, y: y - h)]
+        case 3: ends = [CGPoint(x: mid - w, y: y - h), CGPoint(x: mid, y: y + h), CGPoint(x: mid + w, y: y - h)]
+        default: ends = [CGPoint(x: mid - w, y: y - h), CGPoint(x: mid + w, y: y + h)]
+        }
+        var points: [CGPoint] = []
+        for (a, b) in zip(ends, ends.dropFirst()) { for t in 0..<8 { let f = CGFloat(t) / 8; points.append(CGPoint(x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f)) } }
+        return CleanHandwriting.stroke(points + ends.suffix(1), pen: CleanHandwriting.Pen(width: 3))
     }
 
     private let pen = CleanHandwriting.Pen(width: 3)
@@ -33,8 +54,9 @@ struct InlineReplacementTests {
         var fields: [NoteGrouping.FieldKind: [Int]] = [:]
         for piece in pieces {
             let ink = try #require(CleanHandwriting.drawing(text: piece.text, baseline: CGPoint(x: piece.x, y: piece.baseline), em: piece.em, pen: pen))
-            fields[piece.kind, default: []] += Array(strokes.count..<(strokes.count + ink.strokes.count))
-            strokes += ink.strokes
+            let marks = piece.marks.map { Self.handMark(over: $0.letter, of: piece.text, x: piece.x, baseline: piece.baseline, em: piece.em, tone: $0.tone) }
+            fields[piece.kind, default: []] += Array(strokes.count..<(strokes.count + ink.strokes.count + marks.count))
+            strokes += ink.strokes + marks
         }
         let parts = fields.mapValues { $0.map { strokes[$0] } }
         let noteCount = strokes.count
@@ -120,19 +142,71 @@ struct InlineReplacementTests {
         #expect(added(page, since: ink).allSatisfy { InlineReplacement.pathBounds([$0]).minX > pinyin.maxX || InlineReplacement.pathBounds([$0]).minY > pinyin.maxY })
     }
 
-    @Test func wrongTonesRewriteOnlyThePinyin() async throws {
+    @Test func aWrongToneMarkIsSwappedAndTheLettersStay() async throws {
         let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
-        let (page, ink, parts) = try page([Piece(text: "好像", x: 80, em: 90, kind: .hanzi), Piece(text: "hào xiàng", x: 330, em: 46, kind: .pinyin)],
+        // hào: the mark is the wrong tone. xiàng: right. Only the mark over the a of hào comes off; ǎ goes there.
+        let (page, ink, parts) = try page([Piece(text: "好像", x: 80, em: 90, kind: .hanzi),
+                                           Piece(text: "hao xiang", x: 330, em: 46, kind: .pinyin, marks: [(1, 4), (6, 4)])],
                                           read: note("好像", "hào xiàng", nil), folder: dir)
         let item = try await suggest(page)
         #expect(page.replaceSuggestion(item.id, with: item.cleanText))
         Preview.write(page.drawing, name: "synthetic-wrong-tones")
+        #expect(page.latestVisibleReplacement?.replacement?.isInline == true)
         let now = Set(ids(page.drawing))
         #expect(parts[.hanzi]!.allSatisfy { now.contains(InkSelection.identity($0)) }, "the Hanzi stays")
-        #expect(parts[.pinyin]!.allSatisfy { !now.contains(InkSelection.identity($0)) }, "the Pinyin is rewritten")
+        let gone = parts[.pinyin]!.filter { !now.contains(InkSelection.identity($0)) }
+        #expect(gone.count == 1, "only the wrong mark comes off: \(gone.count)")
+        let pinyin = InlineReplacement.pathBounds(parts[.pinyin]!)
+        let hao = InlineReplacement.pathBounds(gone)
+        #expect(hao.maxY < pinyin.midY && hao.midX < pinyin.midX, "it is the mark over hào")
+        let new = added(page, since: ink).map { InlineReplacement.pathBounds([$0]) }
+        #expect(new.contains { abs($0.midX - hao.midX) < 12 && $0.maxY < pinyin.midY }, "ǎ where it was")
+        #expect(!new.contains { $0.midX > pinyin.midX && $0.midX < pinyin.maxX && $0.maxY < pinyin.midY }, "xiàng was right and is left alone")
         let receipt = try #require(page.latestVisibleReplacement)
         #expect(page.restoreOriginal(receipt.id))
         #expect(ids(page.drawing) == ids(ink))
+    }
+
+    @Test func pinyinCutShortGetsOnlyTheMissingSyllable() throws {
+        let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
+        // 好像 with only `hao` written: ǎ goes over it and `xiàng` after it. Proposed from the dictionary as Suggest does
+        // (the test pages' starter list does not take Pinyin cut short); this proposal carries no meaning, so none is added.
+        let (_, ink, parts) = try page([Piece(text: "好像", x: 80, em: 90, kind: .hanzi), Piece(text: "hao", x: 330, em: 46, kind: .pinyin)],
+                                       read: note("好像", "hao", nil), folder: dir)
+        let vocabulary = StarterVocabulary(entries: StarterVocabulary.standard.entries, lexicon: Lexicon.shared)
+        let proposal = try #require(vocabulary.phraseProposal(for: note("好像", "hao", nil)))
+        var item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "好像 hao", proposal: proposal)
+        item.sourceStrokeIDs = Set(ids(ink))
+        item.fieldInk = FieldInk(hanzi: Set(parts[.hanzi]!.map(InkSelection.identity)), pinyin: Set(parts[.pinyin]!.map(InkSelection.identity)),
+                                 hanziText: "好像", pinyinText: "hao", pinyinWritten: true)
+        let plan = try #require(InlineReplacement.plan(for: item, in: ink, pageWidth: 1180), "\(proposal.pinyinState)")
+        Preview.write(PKDrawing(strokes: ink.strokes + plan.added), name: "synthetic-cut-short")
+        #expect(plan.removed.isEmpty, "every stroke of `hao` stays")
+        let hao = InlineReplacement.pathBounds(parts[.pinyin]!)
+        let new = plan.added.map { InlineReplacement.pathBounds([$0]) }
+        #expect(new.contains { $0.midX > hao.minX && $0.midX < hao.maxX && $0.maxY < hao.midY }, "a mark over hao")
+        let after = new.filter { $0.minX > hao.maxX }.reduce(CGRect.null) { $0.union($1) }
+        let xiang = try #require(CleanHandwriting.bounds(of: "xiàng", em: 46))
+        #expect(abs(after.width - xiang.width) < 0.25 * xiang.width, "xiàng after hao, at its size: \(after.width) vs \(xiang.width)")
+        #expect(abs(after.height - xiang.height) < 0.3 * xiang.height)
+        #expect(after.midY > hao.minY && after.midY < hao.maxY + 20)
+    }
+
+    @Test func dividingAWordAfterWhatWasWritten() {
+        #expect(InlineReplacement.divide("hǎoxiàng", after: "hao") == ("hǎo", "xiàng"))
+        #expect(InlineReplacement.divide("nóngfū shìjí", after: "nongfushi") == ("nóngfū shì", "jí"))
+        #expect(InlineReplacement.divide("hǎoxiàng", after: "haoxiang") == ("hǎoxiàng", ""))
+        #expect(InlineReplacement.divide("hǎoxiàng", after: "xiang") == ("hǎoxiàng", ""))
+    }
+
+    @Test func aMarkWhereNoneBelongsComesOff() throws {
+        // zhīshi: the second syllable is neutral, so the mark over the i of shi comes off and nothing goes back.
+        let letters = try #require(CleanHandwriting.drawing(text: "zhi shi", baseline: CGPoint(x: 100, y: 200), em: 46, pen: pen))
+        let first = Self.handMark(over: 2, of: "zhi shi", x: 100, baseline: 200, em: 46, tone: 1)
+        let second = Self.handMark(over: 6, of: "zhi shi", x: 100, baseline: 200, em: 46, tone: 2)
+        let fix = try #require(InlineReplacement.toneMarks(written: "zhī shí", target: "zhīshi", strokes: letters.strokes + [first, second], em: 46, pen: pen))
+        #expect(fix.marks.isEmpty, "zhī was right; no mark goes on shi")
+        #expect(fix.wrong.map(InkSelection.identity) == [InkSelection.identity(second)])
     }
 
     @Test func fieldsWrittenAsOneCellAreToldApartByTheGapBetweenThem() async throws {
@@ -158,20 +232,37 @@ struct InlineReplacementTests {
         #expect(ids(page.drawing) == ids(ink))
     }
 
-    @Test func aLineThatIsFullPutsTheEnglishUnderneath() async throws {
+    @Test func aFullLineRunsTheEnglishPastTheEdgeNotUnderneath() async throws {
         let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
         let (page, ink, parts) = try page([Piece(text: "好像", x: 300, em: 90, kind: .hanzi), Piece(text: "hao xiang", x: 540, em: 46, kind: .pinyin)],
                                           read: note("好像", "hao xiang", nil), folder: dir)
         let item = try await suggest(page)
-        #expect(page.replaceSuggestion(item.id, with: item.cleanText))
+        #expect(page.replaceSuggestion(item.id, with: item.cleanText, pageWidth: 820))
         Preview.write(page.drawing, name: "synthetic-full-line")
+        #expect(page.latestVisibleReplacement?.replacement?.isInline == true)
         let all = InlineReplacement.pathBounds(parts.values.flatMap { $0 })
-        let below = added(page, since: ink).filter { InlineReplacement.pathBounds([$0]).minY > all.maxY }
-        #expect(!below.isEmpty)
-        #expect(page.drawing.bounds.maxX <= 830)
+        let pinyin = InlineReplacement.pathBounds(parts[.pinyin]!)
+        let new = added(page, since: ink).map { InlineReplacement.pathBounds([$0]) }
+        #expect(!new.contains { $0.minY > all.maxY }, "nothing under the note")
+        let english = new.filter { $0.minX > pinyin.maxX }.reduce(CGRect.null) { $0.union($1) }
+        #expect(english.maxX > 830, "past the edge of the view")
+        #expect(english.midY > pinyin.minY && english.midY < pinyin.maxY + 10, "on the Pinyin's line")
     }
 
-    @Test func bigWritingBreaksALongMeaningIntoLines() async throws {
+    @Test func otherWritingOnTheLineIsSteppedOver() async throws {
+        let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
+        let blocker = SyntheticInk.drawing(writing: "大", origin: CGPoint(x: 600, y: 170), glyphSize: 50)
+        let (page, ink, parts) = try page([Piece(text: "好像", x: 80, em: 90, kind: .hanzi), Piece(text: "hao xiang", x: 330, em: 46, kind: .pinyin)],
+                                          read: note("好像", "hao xiang", nil), extra: blocker.strokes, folder: dir)
+        let item = try await suggest(page)
+        #expect(page.replaceSuggestion(item.id, with: item.cleanText))
+        Preview.write(page.drawing, name: "synthetic-stepped-over")
+        let wall = InlineReplacement.pathBounds(blocker.strokes), pinyin = InlineReplacement.pathBounds(parts[.pinyin]!)
+        let english = added(page, since: ink).map { InlineReplacement.pathBounds([$0]) }.filter { $0.minX > pinyin.maxX }
+        #expect(!english.isEmpty && english.allSatisfy { !$0.intersects(wall) && $0.minY < pinyin.maxY + 10 })
+    }
+
+    @Test func bigWritingKeepsALongMeaningOnItsLine() async throws {
         let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
         let (page, ink, parts) = try page([Piece(text: "好像", x: 60, em: 130, kind: .hanzi), Piece(text: "hao xiang", x: 350, em: 100, kind: .pinyin)],
                                           read: note("好像", "hao xiang", nil), folder: dir)
@@ -180,9 +271,7 @@ struct InlineReplacementTests {
         Preview.write(page.drawing, name: "synthetic-big")
         #expect(page.latestVisibleReplacement?.replacement?.isInline == true)
         let all = InlineReplacement.pathBounds(parts.values.flatMap { $0 })
-        let below = InlineReplacement.pathBounds(added(page, since: ink).filter { InlineReplacement.pathBounds([$0]).minY > all.maxY })
-        #expect(below.height > 130, "two lines")
-        #expect(below.maxX <= 820)
+        #expect(!added(page, since: ink).contains { InlineReplacement.pathBounds([$0]).minY > all.maxY })
     }
 
     @Test(arguments: [(120.0, 300.0), (300.0, 120.0)])
@@ -250,10 +339,12 @@ struct InlineReplacementTests {
 
     @Test func deletingWhatWasAddedNeverDeletesTheStudentsInk() async throws {
         let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
-        let (page, ink, _) = try page([Piece(text: "好像", x: 80, em: 90, kind: .hanzi), Piece(text: "hào xiàng", x: 330, em: 46, kind: .pinyin)],
+        let (page, ink, _) = try page([Piece(text: "好像", x: 80, em: 90, kind: .hanzi),
+                                       Piece(text: "hao xiang", x: 330, em: 46, kind: .pinyin, marks: [(1, 4), (6, 4)])],
                                       read: note("好像", "hào xiàng", nil), folder: dir)
         let item = try await suggest(page)
         #expect(page.replaceSuggestion(item.id, with: item.cleanText))
+        #expect(page.drawing.strokes.count == ink.strokes.count + added(page, since: ink).count - 1, "the wrong mark is off the page")
         page.deleteReplacement(try #require(page.latestVisibleReplacement).id)
         #expect(ids(page.drawing) == ids(ink))
     }
@@ -285,7 +376,9 @@ struct InlineReplacementTests {
             var pieces: [Piece] = []
             for (text, size, kind) in [(hanzi, em, NoteGrouping.FieldKind.hanzi), (pinyin, small, .pinyin), (english, small, .english)] {
                 guard let text else { continue }
-                pieces.append(Piece(text: text, x: x, em: size, kind: kind, baseline: baseline))
+                // The note read as hào xiàng is written untoned with hand-sized marks, as a student would.
+                let marked = text == "hào xiàng"
+                pieces.append(Piece(text: marked ? "hao xiang" : text, x: x, em: size, kind: kind, baseline: baseline, marks: marked ? [(1, 4), (6, 4)] : []))
                 x += (CleanHandwriting.bounds(of: text, em: size)?.width ?? 0) + CGFloat.random(in: 0.2...2.2, using: &random) * em
                 baseline += CGFloat.random(in: -0.15...0.15, using: &random) * em
             }
@@ -301,6 +394,8 @@ struct InlineReplacementTests {
                 for (kind, strokes) in parts where kind != .pinyin {
                     #expect(strokes.allSatisfy { now.contains(InkSelection.identity($0)) }, "round \(round): \(kind) ink changed")
                 }
+                // The letters were right in every note, so at most a wrong tone mark comes off, never a letter.
+                #expect((parts[.pinyin] ?? []).filter { !now.contains(InkSelection.identity($0)) }.count <= 1, "round \(round): Pinyin rewritten")
                 #expect(blockers.allSatisfy { now.contains(InkSelection.identity($0)) })
                 let staying = ink.strokes.filter { now.contains(InkSelection.identity($0)) }.map { InlineReplacement.pathBounds([$0]) }
                 for stroke in added(page, since: ink) {
