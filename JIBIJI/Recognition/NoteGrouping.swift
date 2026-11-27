@@ -309,6 +309,18 @@ enum NoteGrouping {
                     best = (view, lead.count, lead.distance)
                 }
             }
+            if best == nil {
+                // Only the start of a word is written in Hanzi (`好 | hao | xiang`): the run is its Pinyin when it spells, letter
+                // for letter, a word that begins with that Hanzi. `他 | ta | he` spells none, so `he` stays English.
+                let longer = Set(vocabulary.entries.filter { $0.hanzi.hasPrefix(hanzi) && $0.hanzi != hanzi }.map { $0.syllables.joined() }
+                    + (Lexicon.ifLoaded?.rows(withHanziPrefix: hanzi).filter { $0.hanzi != hanzi && !$0.isReference }.map(\.letters) ?? []))
+                for view in views {
+                    let words = view.flatMap { $0 }
+                    for count in stride(from: words.count, to: view[0].count, by: -1) where count > (best?.count ?? 0) {
+                        if longer.contains(FieldValidation.letters(Array(words[..<count]))) { best = (view, count, 0) }
+                    }
+                }
+            }
             guard let best else { continue }
 
             func joined(_ range: Range<Int>, _ parsed: Parsed, _ text: String) -> Piece {

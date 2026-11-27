@@ -52,6 +52,9 @@ final class Lexicon: @unchecked Sendable {
     private let histogram: [[UInt8]]
     /// Names and variants, which a spelling-only search never offers. A flat array, so the search never copies a row to ask.
     private let excluded: [Bool]
+    /// How common each reading of a character is in words: the corpus frequency of every longer word in which the
+    /// character has that reading (`说` + `shuo1` counts 说话, 小说…). Keyed by character and lowercased numbered syllable.
+    private let readingUse: [String: Int]
 
     var count: Int { rows.count }
 
@@ -74,6 +77,23 @@ final class Lexicon: @unchecked Sendable {
         }
         spelled = bytes; histogram = counts
         excluded = rows.map { $0.isProperName || $0.isVariant }
+        var use: [String: Int] = [:]
+        for row in rows where row.hanzi.count > 1 && row.frequency > 0 {
+            let syllables = row.numbered.lowercased().split(separator: " ")
+            guard syllables.count == row.hanzi.count else { continue }
+            for (character, syllable) in zip(row.hanzi, syllables) { use["\(character)\(syllable)", default: 0] += row.frequency }
+        }
+        readingUse = use
+    }
+
+    /// How everyday a reading is, among the readings of the same Hanzi: for one character, its share of the character's
+    /// use in longer words, plus a little for each meaning the dictionary gives it. 说 shuō over shuì, 行 xíng over háng.
+    private func everyday(_ row: Row, among rows: [Row]) -> Double {
+        let senses = Double(Lexicon.cleanSenses(row.glosses).count) / 5
+        guard row.hanzi.count == 1 else { return senses }
+        let key = { (r: Row) in "\(r.hanzi)\(r.numbered.lowercased())" }
+        let total = rows.filter { $0.hanzi == row.hanzi }.reduce(0) { $0 + (readingUse[key($1)] ?? 0) }
+        return (total > 0 ? 2 * Double(readingUse[key(row)] ?? 0) / Double(total) : 0) + senses
     }
 
     /// Parses the tab-separated table (`simplified \t numbered pinyin \t gloss | gloss`).
@@ -195,7 +215,14 @@ final class Lexicon: @unchecked Sendable {
     /// The dictionary's short meaning of a whole word with this reading; nil for names, variants and unlisted phrases.
     func gloss(of hanzi: String, pinyin: String) -> String? {
         let key = { (text: String) in text.precomposedStringWithCanonicalMapping.lowercased().filter { !$0.isWhitespace } }
-        return rows(forHanzi: hanzi).first { !$0.isReference && key($0.pinyin) == key(pinyin) && !$0.gloss.isEmpty }?.gloss
+        let matching = rows(forHanzi: hanzi).filter { key($0.pinyin) == key(pinyin) && !$0.gloss.isEmpty }
+        if let real = matching.first(where: { !$0.isReference }) { return real.gloss }
+        // The student wrote these Hanzi, so a name or place (中国), or a word whose only entry has a pronunciation note
+        // (部分), still gets its meaning. Never a variant or a cross-reference.
+        return matching.first { row in
+            let first = row.glosses.first?.lowercased() ?? ""
+            return !Lexicon.isVariantGloss(first) && !first.hasPrefix("used in")
+        }?.gloss
     }
 
     private func phraseReading(_ hanzi: String, written: String?) -> (pinyin: String, complete: Bool)? {
@@ -295,7 +322,7 @@ final class Lexicon: @unchecked Sendable {
                     out.append(row)
                 }
             }
-            return Array(Self.ranked(out, written: pairs).prefix(6))
+            return Array(ranked(out, written: pairs).prefix(6))
         }
 
         guard !tokens.isEmpty, latinIsPinyin != false else { return [] }
@@ -312,7 +339,7 @@ final class Lexicon: @unchecked Sendable {
                 found += rows(forLetters: letters).filter { !$0.isReference && $0.hanzi.count >= 1 }
             }
         }
-        return Array(Self.ranked(found, written: Array(pairs)).prefix(6))
+        return Array(ranked(found, written: Array(pairs)).prefix(6))
     }
 
     /// Dictionary words that begin with the written Hanzi and whose spelling is close to what the recognizers produced.
@@ -451,12 +478,12 @@ final class Lexicon: @unchecked Sendable {
     /// Entries whose tones agree, in order, with the tone marks the student wrote come first; names, variants and
     /// cross-references are dropped when a real word is available; then the spelling that explains more of the Pinyin,
     /// then the more common word.
-    private static func ranked(_ rows: [Row], written: [(raw: String, folded: String)]) -> [Row] {
-        let marks = writtenMarks(written.map(\.raw).joined(separator: " "))
+    private func ranked(_ rows: [Row], written: [(raw: String, folded: String)]) -> [Row] {
+        let marks = Self.writtenMarks(written.map(\.raw).joined(separator: " "))
         var seen = Set<String>()
         var unique = rows.filter { seen.insert($0.hanzi + "|" + $0.numbered).inserted }
         if unique.contains(where: { !$0.isReference }) { unique = unique.filter { !$0.isReference } }
-        let good = unique.filter { marks.isEmpty || isSubsequence(marks, of: $0.tones) }
+        let good = unique.filter { marks.isEmpty || Self.isSubsequence(marks, of: $0.tones) }
         let pool = good.isEmpty ? unique : good
         let explained = Set(written.map(\.folded)).isEmpty ? 0 : written.map(\.folded).joined().count
         return pool.enumerated().sorted { a, b in
@@ -468,6 +495,11 @@ final class Lexicon: @unchecked Sendable {
             }
             // A common word before a rare one that is spelled the same (是 before 氏).
             if a.element.frequency != b.element.frequency { return a.element.frequency > b.element.frequency }
+            // Readings of the same Hanzi: the everyday one first, so a Hanzi written alone offers 好 hǎo before hào.
+            if a.element.hanzi == b.element.hanzi {
+                let ea = everyday(a.element, among: pool), eb = everyday(b.element, among: pool)
+                if ea != eb { return ea > eb }
+            }
             if a.element.hanzi.count != b.element.hanzi.count { return a.element.hanzi.count < b.element.hanzi.count }
             return a.offset < b.offset
         }.map(\.element)
@@ -525,17 +557,52 @@ final class Lexicon: @unchecked Sendable {
     }
 
     private static let pronunciationNote = try! NSRegularExpression(pattern: "\\s*\\((?:Taiwan|also|Tw) pr\\.[^)]*\\)")
+    /// A classifier note inside a sense (`cat (CL:隻|只[zhi1])`): the note goes, the sense stays.
+    private static let classifierNote = try! NSRegularExpression(pattern: "\\s*\\(CL:[^)]*\\)")
+
+    /// A note in brackets that quotes Hanzi or dictionary Pinyin (`although (often used with 可是[ke3 shi4])`).
+    private static let quotingNote = try! NSRegularExpression(pattern: "\\s*\\([^()]*[\\[|\\x{3400}-\\x{9FFF}][^()]*\\)")
+    /// A cross-reference closing a phrase (`one of the Eight Trigrams 八卦[ba1 gua4], symbolizing earth`).
+    private static let closingReference = try! NSRegularExpression(
+        pattern: "\\s*[\\x{3400}-\\x{9FFF}]+(?:\\|[\\x{3400}-\\x{9FFF}]+)?\\[[^\\]]*\\](?=\\s*(?:[,;)]|$))")
+    /// Words a sense cannot end on once a reference is taken out of it (`euphemistic variant of`).
+    private static let danglingWords: Set<String> = ["of", "for", "to", "as", "in", "with", "by", "and", "or", "the", "a", "an", "from",
+                                                     "see", "like", "than", "at", "on", "e.g.", "i.e.", "cf.", "is", "are"]
 
     /// Real senses only, as plain English: no classifier lists (`CL:个`), cross-references, pronunciation notes
     /// (`(Taiwan pr. [han4])`), or senses that quote Hanzi or dictionary Pinyin (`used in 上聲|上声[shang3 sheng1]`),
     /// which would otherwise be written into the student's notes.
-    static func cleanSenses(_ glosses: [String]) -> [String] {
+    ///
+    /// `readable` is for the meaning shown on a card: there a note that quotes Hanzi is taken out and the sense kept
+    /// (`although; even though (often used with 可是[ke3 shi4])` → `although; even though`), unless what is left no
+    /// longer reads as a meaning. Without it a sense that quotes Hanzi anywhere is dropped, which is what decides whether
+    /// an entry is a real word.
+    static func cleanSenses(_ glosses: [String], readable: Bool = false) -> [String] {
         glosses.compactMap { raw in
-            let g = pronunciationNote.stringByReplacingMatches(in: raw, range: NSRange(raw.startIndex..., in: raw), withTemplate: "")
-                .trimmingCharacters(in: .whitespaces)
-            let lower = g.lowercased()
-            guard !g.isEmpty, !lower.hasPrefix("cl:"), !lower.hasPrefix("see "), !lower.hasPrefix("also pr."), !lower.hasPrefix("taiwan pr."),
-                  !lower.hasPrefix("(old)"), !lower.hasPrefix("used in"), !lower.hasPrefix("abbr. for"),
+            var g = raw
+            for note in [pronunciationNote, classifierNote] {
+                g = note.stringByReplacingMatches(in: g, range: NSRange(g.startIndex..., in: g), withTemplate: "")
+            }
+            g = g.trimmingCharacters(in: .whitespaces)
+            let skipped = ["cl:", "see ", "also pr.", "taiwan pr.", "(old)", "used in", "abbr. for"]
+            guard !skipped.contains(where: { g.lowercased().hasPrefix($0) }) else { return nil }
+            if readable {
+                let before = g
+                for note in [quotingNote, closingReference] {
+                    g = note.stringByReplacingMatches(in: g, range: NSRange(g.startIndex..., in: g), withTemplate: "")
+                }
+                g = g.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                if g != before {
+                    // Each clause must still read as a meaning: `whose name ends in 院[yuan4]; chair of a board` keeps only the chair.
+                    g = g.components(separatedBy: ";").compactMap { clause -> String? in
+                        var c = clause.trimmingCharacters(in: .whitespaces)
+                        while let last = c.last, ",:".contains(last) { c.removeLast() }
+                        guard let word = c.split(separator: " ").last, !danglingWords.contains(word.lowercased()) else { return nil }
+                        return c
+                    }.joined(separator: "; ")
+                }
+            }
+            guard !g.isEmpty, !skipped.contains(where: { g.lowercased().hasPrefix($0) }),
                   !g.contains("["), !g.contains("|"),
                   !g.unicodeScalars.contains(where: { (0x3400...0x9FFF).contains($0.value) }) else { return nil }
             return g
@@ -543,9 +610,13 @@ final class Lexicon: @unchecked Sendable {
     }
 
     static func shortGloss(_ glosses: [String]) -> String {
-        let senses = cleanSenses(glosses)
+        let senses = cleanSenses(glosses, readable: true)
         guard let first = senses.first else { return "" }
-        if senses.count > 1, first.count + senses[1].count < 48, !first.contains(";") { return first + "; " + senses[1] }
+        // A second sense only when the dictionary gives it plainly, so a short meaning is not padded with a stripped note.
+        let plain = Set(cleanSenses(glosses))
+        if let second = senses.dropFirst().first(where: plain.contains), first.count + second.count < 48, !first.contains(";") {
+            return first + "; " + second
+        }
         return first
     }
 }

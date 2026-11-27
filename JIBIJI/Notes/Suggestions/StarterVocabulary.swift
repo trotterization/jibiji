@@ -264,9 +264,13 @@ struct StarterVocabulary: Sendable {
         }
         guard state != .correct else { return nil }
         let english = note.english.isUsable ? note.english.value ?? "" : ""
+        // No English written and the Hanzi are one dictionary word (好像): its dictionary meaning, as for any word.
+        // A phrase of several words gets none: that English would be made up.
+        let dictionary = english.isEmpty && note.english.status == .absent
+            ? entries.first(where: { $0.hanzi == hanzi })?.candidate.gloss ?? lexicon.gloss(of: hanzi, pinyin: reading.pinyin) : nil
         return SuggestionProposal(
-            candidates: [SuggestionCandidate(hanzi: hanzi, pinyin: reading.pinyin, gloss: english)],
-            hanziAlreadyWritten: true, glossAlreadyWritten: true, pinyinState: state,
+            candidates: [SuggestionCandidate(hanzi: hanzi, pinyin: reading.pinyin, gloss: dictionary ?? english)],
+            hanziAlreadyWritten: true, glossAlreadyWritten: dictionary == nil, pinyinState: state,
             pinyinFromDictionary: reading.match == .misread,
             writtenPinyin: written.isEmpty ? nil : written, writtenGloss: english.isEmpty ? nil : english)
     }

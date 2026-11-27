@@ -154,9 +154,13 @@ final class PageFlashcards {
     func refresh(from drawing: PKDrawing, annotations: [AcceptedAnnotation] = []) -> Task<Void, Never> {
         inkChanged(drawing)
         // Hidden notes (their ink is erased) are ignored.
-        let corrections = annotations.filter { PageSuggestionModel.isVisible($0, in: drawing) }
+        // So are notes completed in place whose handwriting has changed since.
+        let present = annotations.contains { $0.replacement?.isInline == true } ? Set(drawing.strokes.map(InkSelection.identity)) : []
+        let corrections = annotations.filter {
+            $0.replacement?.isInline == true ? PageSuggestionModel.isCurrent($0, strokeIDs: present) : PageSuggestionModel.isVisible($0, in: drawing)
+        }
         // Cards read the student's own strokes, exactly as Suggest does: generated replacement ink is confirmed text.
-        let readable = PageSuggestionModel.readableInk(drawing, excluding: corrections)
+        let readable = PageSuggestionModel.readableInk(drawing, excluding: annotations)
         let digest = currentDigest!
         let token = generation
         // Accepted notes already hold their Hanzi, Pinyin and English: their cards appear at once, before any reading.

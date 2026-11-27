@@ -32,7 +32,7 @@ struct SuggestionOverlay: View {
                         .transition(.opacity)
                     PendingChip(
                         item: item,
-                        replace: { replace(item, with: item.cleanText) },
+                        replace: { replace(item, with: item.cleanText, width: proxy.size.width) },
                         edit: { editText = item.cleanText; editing = item },
                         addNote: { suggestions.accept(item.id) },
                         skip: { withAnimation(Theme.Motion.list) { suggestions.dismiss(item.id) } },
@@ -51,6 +51,8 @@ struct SuggestionOverlay: View {
                             .offset(x: moved.minX - 6, y: moved.minY - 6)
                     }
                     ReplacedChip(
+                        // Writing added around the student's own belongs where it is: it is taken back, not moved.
+                        inline: note.replacement?.isInline == true,
                         resize: { factor in resize(note, by: factor) },
                         drag: DragGesture(minimumDistance: 2, coordinateSpace: .global)
                             .onChanged { drag = $0.translation }
@@ -101,7 +103,7 @@ struct SuggestionOverlay: View {
             TextField("Replace with", text: $editText)
                 .accessibilityIdentifier("replacementText")
             Button("Replace") {
-                if let editing { replace(editing, with: editText) }
+                if let editing { replace(editing, with: editText, width: InlineReplacement.defaultPageWidth) }
                 editing = nil
             }
             Button("Cancel", role: .cancel) { editing = nil }
@@ -110,8 +112,9 @@ struct SuggestionOverlay: View {
         }
     }
 
-    private func replace(_ item: PendingSuggestion, with text: String) {
-        guard page.replaceSuggestion(item.id, with: text),
+    /// A page is as wide as the view it is shown in, at zoom 1.
+    private func replace(_ item: PendingSuggestion, with text: String, width: CGFloat) {
+        guard page.replaceSuggestion(item.id, with: text, pageWidth: max(width, 1)),
               let note = page.latestVisibleReplacement else { return }
         canvas.applyDrawing(page.drawing)
         recent = (note.id, page.drawing.strokes.count)
@@ -252,6 +255,7 @@ private struct PendingChip: View {
 /// Shown under a replacement right after it is made: drag the grip to move it, − and + to size
 /// it to the writing around it, or undo the replacement.
 private struct ReplacedChip<Drag: Gesture>: View {
+    var inline = false
     let resize: (CGFloat) -> Void
     let drag: Drag
     let restore: () -> Void
@@ -259,36 +263,40 @@ private struct ReplacedChip<Drag: Gesture>: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 40, height: 36)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .contentShape(Rectangle())
-                .gesture(drag)
-                .accessibilityLabel("Move replacement")
-                .accessibilityHint("Drag to move the replaced writing.")
-                .accessibilityIdentifier("moveReplacement")
-            Button("Smaller", systemImage: "minus") { resize(0.85) }
-                .labelStyle(.iconOnly)
-                .buttonStyle(SizeButtonStyle())
-                .accessibilityIdentifier("shrinkReplacement")
-            Button("Larger", systemImage: "plus") { resize(1 / 0.85) }
-                .labelStyle(.iconOnly)
-                .buttonStyle(SizeButtonStyle())
-                .accessibilityIdentifier("growReplacement")
-            Rectangle()
-                .fill(Color.primary.opacity(0.12))
-                .frame(width: 1, height: 20)
-                .padding(.horizontal, 4)
+            if !inline {
+                Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 40, height: 36)
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .contentShape(Rectangle())
+                    .gesture(drag)
+                    .accessibilityLabel("Move replacement")
+                    .accessibilityHint("Drag to move the replaced writing.")
+                    .accessibilityIdentifier("moveReplacement")
+                Button("Smaller", systemImage: "minus") { resize(0.85) }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(SizeButtonStyle())
+                    .accessibilityIdentifier("shrinkReplacement")
+                Button("Larger", systemImage: "plus") { resize(1 / 0.85) }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(SizeButtonStyle())
+                    .accessibilityIdentifier("growReplacement")
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 1, height: 20)
+                    .padding(.horizontal, 4)
+            }
             Button("Restore", action: restore)
                 .buttonStyle(QuietButtonStyle())
                 .accessibilityLabel("Restore original handwriting")
                 .accessibilityIdentifier("restoreReplacementInline")
-            Button("Delete", role: .destructive, action: delete)
-                .buttonStyle(QuietButtonStyle())
-                .accessibilityLabel("Delete replacement")
-                .accessibilityIdentifier("deleteReplacementInline")
+            if !inline {
+                Button("Delete", role: .destructive, action: delete)
+                    .buttonStyle(QuietButtonStyle())
+                    .accessibilityLabel("Delete replacement")
+                    .accessibilityIdentifier("deleteReplacementInline")
+            }
         }
         .padding(4)
         .panel(radius: 14)

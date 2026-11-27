@@ -13,10 +13,7 @@ final class InkReplacementUITests: XCTestCase {
         waitStatus("3 strokes · Saved", app)
         app.buttons["suggestButton"].tap()
         XCTAssertTrue(app.buttons["replaceHandwriting"].waitForExistence(timeout: 10))
-        // Another reading is picked from the chip's menu; Replace then writes it in place.
-        app.buttons["suggestionOptions"].tap()
-        XCTAssertTrue(app.buttons["牛"].waitForExistence(timeout: 5))
-        app.buttons["牛"].tap()
+        // The fixture does not say where each field is, so the whole line is replaced.
         app.buttons["replaceHandwriting"].tap()
         // Clean handwriting is written as several thin pen strokes.
         let replaced = waitReplaced(app)
@@ -45,9 +42,44 @@ final class InkReplacementUITests: XCTestCase {
         waitStatus("3 strokes · Saved", app)
     }
 
-    @MainActor private func launch(reset: Bool) -> XCUIApplication {
+    /// Issue #29: the student's strokes stay and only what is missing is added.
+    @MainActor
+    func testReplaceInPlaceKeepsTheInkAndCanBeUndoneAndRestoredAfterRelaunch() {
+        continueAfterFailure = false
+        var app = launch(reset: true, inPlace: true)
+        let canvas = app.descendants(matching: .any)["noteCanvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 10))
+        draw(canvas, from: CGVector(dx: 0.15, dy: 0.30), to: CGVector(dx: 0.27, dy: 0.30))
+        draw(canvas, from: CGVector(dx: 0.21, dy: 0.25), to: CGVector(dx: 0.16, dy: 0.38))
+        draw(canvas, from: CGVector(dx: 0.21, dy: 0.30), to: CGVector(dx: 0.27, dy: 0.38))
+        waitStatus("3 strokes · Saved", app)
+        app.buttons["suggestButton"].tap()
+        XCTAssertTrue(app.buttons["replaceHandwriting"].waitForExistence(timeout: 10))
+        app.buttons["replaceHandwriting"].tap()
+        let completed = waitReplaced(app)
+        XCTAssertTrue(app.buttons["restoreReplacementInline"].waitForExistence(timeout: 5))
+        // What was added belongs where it is: it can be taken back, not resized or deleted on its own.
+        XCTAssertFalse(app.buttons["growReplacement"].exists)
+        XCTAssertFalse(app.buttons["deleteReplacementInline"].exists)
+        app.buttons["Undo"].firstMatch.tap()
+        waitStatus("3 strokes · Saved", app)
+        app.buttons["Redo"].firstMatch.tap()
+        waitStatus(completed, app)
+        // Asking again has nothing new to say about a completed note.
+        app.buttons["suggestButton"].tap()
+        XCTAssertFalse(app.buttons["replaceHandwriting"].waitForExistence(timeout: 3))
+        app.terminate()
+        app = launch(reset: false, inPlace: true)
+        waitStatus(completed, app)
+        XCTAssertTrue(app.buttons["undoSuggestion"].waitForExistence(timeout: 5))
+        app.buttons["undoSuggestion"].tap()
+        waitStatus("3 strokes · Saved", app)
+    }
+
+    @MainActor private func launch(reset: Bool, inPlace: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-JIBIJIStoreName", "uitest-ink-replacement", "-JIBIJIReplacementFixture", "YES"]
+        if inPlace { app.launchArguments += ["-JIBIJIInPlaceFixture", "YES"] }
         if reset { app.launchArguments += ["-JIBIJIResetStore", "YES"] }
         app.launch()
         XCTAssertTrue(app.buttons["openNotebook"].waitForExistence(timeout: 10))

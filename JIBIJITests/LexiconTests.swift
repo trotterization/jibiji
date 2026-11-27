@@ -15,6 +15,26 @@ import Testing
         #expect(lexicon.rows(forHanzi: "电脑").first?.numbered == "dian4 nao3")
     }
 
+    @Test func aClassifierNoteInsideASenseDropsOnlyTheNote() {
+        // 猫 is "cat (CL:隻|只[zhi1]) | (dialect) to hide oneself": the card says cat, not the dialect sense.
+        #expect(Lexicon.cleanSenses(["cat (CL:隻|只[zhi1])", "(dialect) to hide oneself"]) == ["cat", "(dialect) to hide oneself"])
+        #expect(Lexicon.shortGloss(["cat (CL:隻|只[zhi1])", "(dialect) to hide oneself"]).hasPrefix("cat"))
+        #expect(Lexicon.cleanSenses(["CL:個|个[ge4]"]).isEmpty, "a sense that is only a classifier list still goes")
+    }
+
+    /// Common words whose meaning quoted Hanzi, or that are names or places, used to get a card with no meaning at all.
+    @Test func commonWordsKeepTheirMeaningWhenTheDictionaryQuotesHanzi() throws {
+        let lexicon = try #require(Lexicon.shared)
+        #expect(lexicon.gloss(of: "虽然", pinyin: "suīrán") == "although; even though", "the note quoting 可是 goes, the meaning stays")
+        #expect(lexicon.gloss(of: "你", pinyin: "nǐ") == "you")
+        #expect(lexicon.gloss(of: "部分", pinyin: "bùfen")?.hasPrefix("part") == true, "a Taiwan pronunciation note does not hide the word")
+        #expect(lexicon.gloss(of: "中国", pinyin: "Zhōngguó") == "China", "a place the student wrote in Hanzi gets its meaning")
+        #expect(lexicon.gloss(of: "院长", pinyin: "yuànzhǎng")?.hasPrefix("chair of a board") == true, "a clause left dangling is dropped")
+        #expect(lexicon.gloss(of: "明", pinyin: "míng") == "bright; (of meaning) clear", "meanings that were fine stay as they were")
+        #expect(lexicon.gloss(of: "猫", pinyin: "māo")?.hasPrefix("cat") == true)
+        #expect(lexicon.gloss(of: "湖北", pinyin: "Húběi") == nil, "a cross-reference is still not a meaning")
+    }
+
     @Test func numberedTonesBecomeMarks() {
         #expect(Lexicon.toneMarked("hao3 xiang4") == "hǎoxiàng")
         #expect(Lexicon.toneMarked("nu:3") == "nǚ")
@@ -303,6 +323,23 @@ import Testing
         // Latin that does not begin with the word's reading is not claimed as its Pinyin.
         let other = NoteGrouping.entries(from: runReadings(["big", "red house", "here"], ["big", "red house", "here"]))
         #expect(!other.contains { $0.hanzi != nil && $0.pinyin != nil })
+    }
+
+    @Test func untonedPinyinInPiecesJoinsWhenItSpellsAWordBeginningWithTheHanzi() throws {
+        func entries(_ hanzi: String, _ words: [String]) -> [NoteGrouping.Entry] {
+            func cell(_ x: CGFloat, _ width: CGFloat, _ stroke: Int) -> NoteLayout.CellCandidate {
+                .init(strokeIndices: [stroke], bounds: CGRect(x: x, y: 100, width: width, height: 60), column: 0, scale: 40, gapBefore: nil)
+            }
+            return NoteGrouping.entries(from: [.init(cell: cell(100, 70, 0), text: hanzi)]
+                + words.enumerated().map { .init(cell: cell(260 + CGFloat($0) * 110, 80, $0 + 1), text: $1) })
+        }
+        let note = entries("好", ["hao", "xiang"])
+        #expect(note.count == 1)
+        #expect(note.first?.pinyin?.text == "hao xiang")
+        #expect(note.first?.pinyin?.strokeIndices == [1, 2])
+        #expect(note.first?.english == nil)
+        // `he` beside 他 tā is English: no word is spelled `tahe`.
+        #expect(entries("他", ["ta", "he"]).first?.english?.text == "he")
     }
 
     @Test func pinyinOfTheNotesOwnHanziIsNeverItsEnglish() throws {

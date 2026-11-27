@@ -73,6 +73,37 @@ struct LocalDeviceInkTests {
     }
 }
 
+/// A saved iPad note of the project's 好 hǎo xiang example where one tone mark is the wrong tone: Replace takes off only
+/// that mark and writes the right one over the same letter, adds 像 and the meaning on the line, and leaves every letter.
+@Suite("Saved wrong-tone ink (local only)", .serialized)
+@MainActor
+struct LocalWrongToneInkTests {
+    nonisolated static var url: URL { PrivateReplayTests.folder.appending(path: "page-3-wrong-tone.drawing") }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: LocalWrongToneInkTests.url.path)))
+    func onlyTheWrongMarkIsSwapped() throws {
+        let page = try PKDrawing(data: Data(contentsOf: Self.url))
+        // Strokes 58–62 are the Hanzi, 63–74 the Pinyin; stroke 72 is the mark over the a of xiang.
+        let drawing = PKDrawing(strokes: Array(page.strokes[58...74]))
+        let ids = drawing.strokes.map(InkSelection.identity)
+        let vocabulary = StarterVocabulary(entries: StarterVocabulary.standard.entries, lexicon: Lexicon.shared)
+        let proposal = try #require(vocabulary.proposal(forRecognizedText: "好 hǎo xiáng"))
+        var item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "好 hǎo xiáng", proposal: proposal)
+        item.sourceStrokeIDs = Set(ids)
+        item.fieldInk = FieldInk(hanzi: Set(ids[0...4]), pinyin: Set(ids[5...16]), hanziText: "好", pinyinText: "hǎo xiáng", pinyinWritten: true)
+        let plan = try #require(InlineReplacement.plan(for: item, in: drawing, pageWidth: 820))
+        Preview.write(PKDrawing(strokes: drawing.strokes.filter { !plan.removed.contains(InkSelection.identity($0)) } + plan.added), name: "wrong-tone-page3")
+        #expect(plan.removed == [ids[14]], "only the wrong mark comes off")
+        let mark = InlineReplacement.pathBounds([drawing.strokes[14]])
+        let a = InlineReplacement.pathBounds([drawing.strokes[13]])
+        let boxes = plan.added.map { InlineReplacement.pathBounds([$0]) }
+        #expect(boxes.contains { $0.midX > a.minX && $0.midX < a.maxX && $0.maxY < a.minY && $0.minY > mark.minY - 30 }, "a falling mark over the a")
+        let pinyin = InlineReplacement.pathBounds(Array(drawing.strokes[5...16]))
+        #expect(boxes.contains { $0.minX > pinyin.maxX && $0.midY > pinyin.minY && $0.midY < pinyin.maxY + 10 }, "the meaning on the line")
+        #expect(!boxes.contains { $0.minY > InlineReplacement.pathBounds(drawing.strokes).maxY }, "nothing under the note")
+    }
+}
+
 /// Replays of private iPad pages. The ink, the readings and the expected results all live in the private evidence folder
 /// beside the repository (`replays/*.json`), so nothing read from a student's handwriting is in this file.
 @Suite("Private replays (local only)", .serialized)
@@ -84,7 +115,7 @@ struct PrivateReplayTests {
         var strokes: [Int]
         /// What each engine read for a set of strokes, given as first and last stroke.
         var regions: [Region]
-        var front: String, back: String, replace: String
+        var front: String?, back: String?, replace: String
     }
     static var folder: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -93,6 +124,13 @@ struct PrivateReplayTests {
     static var fixtures: [URL] {
         ((try? FileManager.default.contentsOfDirectory(at: folder.appending(path: "replays"), includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "json" }
+    }
+
+    @MainActor private static func preview(_ item: PendingSuggestion, _ drawing: PKDrawing, _ name: String) {
+        let plan = InlineReplacement.plan(for: item, in: drawing, pageWidth: 1180)
+        print("REPLAY \(name) “\(item.recognizedText)” \(item.proposal.pinyinState): " + (plan.map { "in place, \($0.added.count) added, \($0.removed.count) removed" } ?? "whole line"))
+        guard let plan else { return }
+        Preview.write(PKDrawing(strokes: drawing.strokes.filter { !plan.removed.contains(InkSelection.identity($0)) } + plan.added), name: name)
     }
 
     @Test(.enabled(if: !PrivateReplayTests.fixtures.isEmpty))
@@ -118,11 +156,17 @@ struct PrivateReplayTests {
             let line = try #require(lines.first)
             #expect(line.strokeIndices?.count == drawing.strokes.count)
             let card = FlashcardExtractor.extract(from: line, lexicon: Lexicon.shared)
-            #expect(card?.front == f.front)
-            #expect(card?.back == f.back)
+            if let front = f.front { #expect(card?.front == front) }
+            if let back = f.back { #expect(card?.back == back) }
             let vocabulary = StarterVocabulary(entries: StarterVocabulary.standard.entries, lexicon: Lexicon.shared)
             let proposal = try #require(vocabulary.proposal(forRecognizedText: line.text) ?? line.resolved.flatMap { vocabulary.phraseProposal(for: $0) })
-            #expect(PendingSuggestion(revision: 0, anchor: .zero, recognizedText: line.text, proposal: proposal).replacementText == f.replace)
+            var item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: line.text, proposal: proposal)
+            #expect(item.replacementText == f.replace)
+            // What Replace would write, for a person to look at.
+            let ids = drawing.strokes.map(InkSelection.identity)
+            item.sourceStrokeIDs = Set((line.strokeIndices ?? []).map { ids[$0] })
+            item.fieldInk = PageSuggestionModel.fieldInk(of: line, ids: ids)
+            await Self.preview(item, drawing, url.deletingPathExtension().lastPathComponent)
         }
     }
 }

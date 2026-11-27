@@ -49,3 +49,15 @@ There is no general dictionary and no semantic AI check. Validity checks above s
 
 - Real handwriting accuracy is only established by device runs. Simulator PencilKit has no Chinese; injected-reader tests prove the logic, not recognition.
 - PaddleOCR mobile exists only in Debug builds (`#if DEBUG`), where the local models are present.
+
+## Replace in place (issue #29)
+
+Replacing the unedited first suggestion writes only what the note is missing, around the student's own strokes (`InlineReplacement`):
+
+- **Hanzi** that is missing goes after the Hanzi that is there, at its measured size; it may be made narrower to fit. With only Pinyin written, the word goes in front of it.
+- **Tone marks** are fixed on the student's own letters; the letters stay. A missing mark is drawn over its letter. A wrong mark (a different tone, or a mark on a neutral syllable) is found in the ink, the small stroke above that letter, taken off, and the right one drawn there. Pinyin read a letter or two wrong, but with the same number of letters, also keeps the student's writing (the readers are far more often wrong than the student).
+- **Pinyin cut short** (`hǎo` for hǎoxiàng) gets its marks and then only the missing syllables, after it at its size.
+- Pinyin is rewritten, and only the Pinyin, when its letters are not the word's, the readers could not read it, or a wrong mark cannot be found in the ink.
+- **English** goes on the note's line after the Pinyin, at its size. Decision (user, 2026-11-26): line format, never under the note. It may run past the right edge of the view, since the page widens to fit ink; it steps past other writing on the line.
+- Nothing is written over other ink. When the fields cannot be told apart or there is no room for the Hanzi, the whole line is replaced as before. Edited text and alternatives also replace the whole line.
+- `InkReplacement.keptStrokeIDs` records the student's strokes the note stands on. They are confirmed with it, so Suggest and Cards do not read them again, until any of them changes. Restore removes what was added and brings back any rewritten Pinyin; Delete does the same, so the student's ink is never deleted with it.
