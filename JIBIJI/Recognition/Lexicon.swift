@@ -52,6 +52,9 @@ final class Lexicon: @unchecked Sendable {
     private let histogram: [[UInt8]]
     /// Names and variants, which a spelling-only search never offers. A flat array, so the search never copies a row to ask.
     private let excluded: [Bool]
+    /// How common each reading of a character is in words: the corpus frequency of every longer word in which the
+    /// character has that reading (`说` + `shuo1` counts 说话, 小说…). Keyed by character and lowercased numbered syllable.
+    private let readingUse: [String: Int]
 
     var count: Int { rows.count }
 
@@ -74,6 +77,23 @@ final class Lexicon: @unchecked Sendable {
         }
         spelled = bytes; histogram = counts
         excluded = rows.map { $0.isProperName || $0.isVariant }
+        var use: [String: Int] = [:]
+        for row in rows where row.hanzi.count > 1 && row.frequency > 0 {
+            let syllables = row.numbered.lowercased().split(separator: " ")
+            guard syllables.count == row.hanzi.count else { continue }
+            for (character, syllable) in zip(row.hanzi, syllables) { use["\(character)\(syllable)", default: 0] += row.frequency }
+        }
+        readingUse = use
+    }
+
+    /// How everyday a reading is, among the readings of the same Hanzi: for one character, its share of the character's
+    /// use in longer words, plus a little for each meaning the dictionary gives it. 说 shuō over shuì, 行 xíng over háng.
+    private func everyday(_ row: Row, among rows: [Row]) -> Double {
+        let senses = Double(Lexicon.cleanSenses(row.glosses).count) / 5
+        guard row.hanzi.count == 1 else { return senses }
+        let key = { (r: Row) in "\(r.hanzi)\(r.numbered.lowercased())" }
+        let total = rows.filter { $0.hanzi == row.hanzi }.reduce(0) { $0 + (readingUse[key($1)] ?? 0) }
+        return (total > 0 ? 2 * Double(readingUse[key(row)] ?? 0) / Double(total) : 0) + senses
     }
 
     /// Parses the tab-separated table (`simplified \t numbered pinyin \t gloss | gloss`).
@@ -302,7 +322,7 @@ final class Lexicon: @unchecked Sendable {
                     out.append(row)
                 }
             }
-            return Array(Self.ranked(out, written: pairs).prefix(6))
+            return Array(ranked(out, written: pairs).prefix(6))
         }
 
         guard !tokens.isEmpty, latinIsPinyin != false else { return [] }
@@ -319,7 +339,7 @@ final class Lexicon: @unchecked Sendable {
                 found += rows(forLetters: letters).filter { !$0.isReference && $0.hanzi.count >= 1 }
             }
         }
-        return Array(Self.ranked(found, written: Array(pairs)).prefix(6))
+        return Array(ranked(found, written: Array(pairs)).prefix(6))
     }
 
     /// Dictionary words that begin with the written Hanzi and whose spelling is close to what the recognizers produced.
@@ -458,12 +478,12 @@ final class Lexicon: @unchecked Sendable {
     /// Entries whose tones agree, in order, with the tone marks the student wrote come first; names, variants and
     /// cross-references are dropped when a real word is available; then the spelling that explains more of the Pinyin,
     /// then the more common word.
-    private static func ranked(_ rows: [Row], written: [(raw: String, folded: String)]) -> [Row] {
-        let marks = writtenMarks(written.map(\.raw).joined(separator: " "))
+    private func ranked(_ rows: [Row], written: [(raw: String, folded: String)]) -> [Row] {
+        let marks = Self.writtenMarks(written.map(\.raw).joined(separator: " "))
         var seen = Set<String>()
         var unique = rows.filter { seen.insert($0.hanzi + "|" + $0.numbered).inserted }
         if unique.contains(where: { !$0.isReference }) { unique = unique.filter { !$0.isReference } }
-        let good = unique.filter { marks.isEmpty || isSubsequence(marks, of: $0.tones) }
+        let good = unique.filter { marks.isEmpty || Self.isSubsequence(marks, of: $0.tones) }
         let pool = good.isEmpty ? unique : good
         let explained = Set(written.map(\.folded)).isEmpty ? 0 : written.map(\.folded).joined().count
         return pool.enumerated().sorted { a, b in
@@ -475,6 +495,11 @@ final class Lexicon: @unchecked Sendable {
             }
             // A common word before a rare one that is spelled the same (是 before 氏).
             if a.element.frequency != b.element.frequency { return a.element.frequency > b.element.frequency }
+            // Readings of the same Hanzi: the everyday one first, so a Hanzi written alone offers 好 hǎo before hào.
+            if a.element.hanzi == b.element.hanzi {
+                let ea = everyday(a.element, among: pool), eb = everyday(b.element, among: pool)
+                if ea != eb { return ea > eb }
+            }
             if a.element.hanzi.count != b.element.hanzi.count { return a.element.hanzi.count < b.element.hanzi.count }
             return a.offset < b.offset
         }.map(\.element)
