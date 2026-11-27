@@ -195,7 +195,14 @@ final class Lexicon: @unchecked Sendable {
     /// The dictionary's short meaning of a whole word with this reading; nil for names, variants and unlisted phrases.
     func gloss(of hanzi: String, pinyin: String) -> String? {
         let key = { (text: String) in text.precomposedStringWithCanonicalMapping.lowercased().filter { !$0.isWhitespace } }
-        return rows(forHanzi: hanzi).first { !$0.isReference && key($0.pinyin) == key(pinyin) && !$0.gloss.isEmpty }?.gloss
+        let matching = rows(forHanzi: hanzi).filter { key($0.pinyin) == key(pinyin) && !$0.gloss.isEmpty }
+        if let real = matching.first(where: { !$0.isReference }) { return real.gloss }
+        // The student wrote these Hanzi, so a name or place (中国), or a word whose only entry has a pronunciation note
+        // (部分), still gets its meaning. Never a variant or a cross-reference.
+        return matching.first { row in
+            let first = row.glosses.first?.lowercased() ?? ""
+            return !Lexicon.isVariantGloss(first) && !first.hasPrefix("used in")
+        }?.gloss
     }
 
     private func phraseReading(_ hanzi: String, written: String?) -> (pinyin: String, complete: Bool)? {
@@ -528,19 +535,49 @@ final class Lexicon: @unchecked Sendable {
     /// A classifier note inside a sense (`cat (CL:隻|只[zhi1])`): the note goes, the sense stays.
     private static let classifierNote = try! NSRegularExpression(pattern: "\\s*\\(CL:[^)]*\\)")
 
+    /// A note in brackets that quotes Hanzi or dictionary Pinyin (`although (often used with 可是[ke3 shi4])`).
+    private static let quotingNote = try! NSRegularExpression(pattern: "\\s*\\([^()]*[\\[|\\x{3400}-\\x{9FFF}][^()]*\\)")
+    /// A cross-reference closing a phrase (`one of the Eight Trigrams 八卦[ba1 gua4], symbolizing earth`).
+    private static let closingReference = try! NSRegularExpression(
+        pattern: "\\s*[\\x{3400}-\\x{9FFF}]+(?:\\|[\\x{3400}-\\x{9FFF}]+)?\\[[^\\]]*\\](?=\\s*(?:[,;)]|$))")
+    /// Words a sense cannot end on once a reference is taken out of it (`euphemistic variant of`).
+    private static let danglingWords: Set<String> = ["of", "for", "to", "as", "in", "with", "by", "and", "or", "the", "a", "an", "from",
+                                                     "see", "like", "than", "at", "on", "e.g.", "i.e.", "cf.", "is", "are"]
+
     /// Real senses only, as plain English: no classifier lists (`CL:个`), cross-references, pronunciation notes
     /// (`(Taiwan pr. [han4])`), or senses that quote Hanzi or dictionary Pinyin (`used in 上聲|上声[shang3 sheng1]`),
     /// which would otherwise be written into the student's notes.
-    static func cleanSenses(_ glosses: [String]) -> [String] {
+    ///
+    /// `readable` is for the meaning shown on a card: there a note that quotes Hanzi is taken out and the sense kept
+    /// (`although; even though (often used with 可是[ke3 shi4])` → `although; even though`), unless what is left no
+    /// longer reads as a meaning. Without it a sense that quotes Hanzi anywhere is dropped, which is what decides whether
+    /// an entry is a real word.
+    static func cleanSenses(_ glosses: [String], readable: Bool = false) -> [String] {
         glosses.compactMap { raw in
             var g = raw
             for note in [pronunciationNote, classifierNote] {
                 g = note.stringByReplacingMatches(in: g, range: NSRange(g.startIndex..., in: g), withTemplate: "")
             }
             g = g.trimmingCharacters(in: .whitespaces)
-            let lower = g.lowercased()
-            guard !g.isEmpty, !lower.hasPrefix("cl:"), !lower.hasPrefix("see "), !lower.hasPrefix("also pr."), !lower.hasPrefix("taiwan pr."),
-                  !lower.hasPrefix("(old)"), !lower.hasPrefix("used in"), !lower.hasPrefix("abbr. for"),
+            let skipped = ["cl:", "see ", "also pr.", "taiwan pr.", "(old)", "used in", "abbr. for"]
+            guard !skipped.contains(where: { g.lowercased().hasPrefix($0) }) else { return nil }
+            if readable {
+                let before = g
+                for note in [quotingNote, closingReference] {
+                    g = note.stringByReplacingMatches(in: g, range: NSRange(g.startIndex..., in: g), withTemplate: "")
+                }
+                g = g.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                if g != before {
+                    // Each clause must still read as a meaning: `whose name ends in 院[yuan4]; chair of a board` keeps only the chair.
+                    g = g.components(separatedBy: ";").compactMap { clause -> String? in
+                        var c = clause.trimmingCharacters(in: .whitespaces)
+                        while let last = c.last, ",:".contains(last) { c.removeLast() }
+                        guard let word = c.split(separator: " ").last, !danglingWords.contains(word.lowercased()) else { return nil }
+                        return c
+                    }.joined(separator: "; ")
+                }
+            }
+            guard !g.isEmpty, !skipped.contains(where: { g.lowercased().hasPrefix($0) }),
                   !g.contains("["), !g.contains("|"),
                   !g.unicodeScalars.contains(where: { (0x3400...0x9FFF).contains($0.value) }) else { return nil }
             return g
@@ -548,9 +585,13 @@ final class Lexicon: @unchecked Sendable {
     }
 
     static func shortGloss(_ glosses: [String]) -> String {
-        let senses = cleanSenses(glosses)
+        let senses = cleanSenses(glosses, readable: true)
         guard let first = senses.first else { return "" }
-        if senses.count > 1, first.count + senses[1].count < 48, !first.contains(";") { return first + "; " + senses[1] }
+        // A second sense only when the dictionary gives it plainly, so a short meaning is not padded with a stripped note.
+        let plain = Set(cleanSenses(glosses))
+        if let second = senses.dropFirst().first(where: plain.contains), first.count + second.count < 48, !first.contains(";") {
+            return first + "; " + second
+        }
         return first
     }
 }

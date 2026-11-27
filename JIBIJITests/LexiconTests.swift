@@ -22,6 +22,19 @@ import Testing
         #expect(Lexicon.cleanSenses(["CL:個|个[ge4]"]).isEmpty, "a sense that is only a classifier list still goes")
     }
 
+    /// Common words whose meaning quoted Hanzi, or that are names or places, used to get a card with no meaning at all.
+    @Test func commonWordsKeepTheirMeaningWhenTheDictionaryQuotesHanzi() throws {
+        let lexicon = try #require(Lexicon.shared)
+        #expect(lexicon.gloss(of: "虽然", pinyin: "suīrán") == "although; even though", "the note quoting 可是 goes, the meaning stays")
+        #expect(lexicon.gloss(of: "你", pinyin: "nǐ") == "you")
+        #expect(lexicon.gloss(of: "部分", pinyin: "bùfen")?.hasPrefix("part") == true, "a Taiwan pronunciation note does not hide the word")
+        #expect(lexicon.gloss(of: "中国", pinyin: "Zhōngguó") == "China", "a place the student wrote in Hanzi gets its meaning")
+        #expect(lexicon.gloss(of: "院长", pinyin: "yuànzhǎng")?.hasPrefix("chair of a board") == true, "a clause left dangling is dropped")
+        #expect(lexicon.gloss(of: "明", pinyin: "míng") == "bright; (of meaning) clear", "meanings that were fine stay as they were")
+        #expect(lexicon.gloss(of: "猫", pinyin: "māo")?.hasPrefix("cat") == true)
+        #expect(lexicon.gloss(of: "湖北", pinyin: "Húběi") == nil, "a cross-reference is still not a meaning")
+    }
+
     @Test func numberedTonesBecomeMarks() {
         #expect(Lexicon.toneMarked("hao3 xiang4") == "hǎoxiàng")
         #expect(Lexicon.toneMarked("nu:3") == "nǚ")

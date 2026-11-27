@@ -136,3 +136,31 @@ struct WrittenTestSheetTests {
         print(text)
     }
 }
+
+/// Opt-in: writes, for every common word (frequency ≥ 1500), the reading and card meaning the app gives from the Hanzi
+/// alone, to the path in `TEST_RUNNER_JIBIJI_LEXICON_DUMP`. Two dumps, before and after a dictionary change, diff into
+/// exactly what the change does to cards.
+@Suite("Dictionary dump (opt-in)")
+struct LexiconDumpTests {
+    nonisolated static var path: String? { ProcessInfo.processInfo.environment["JIBIJI_LEXICON_DUMP"] }
+
+    @Test(.enabled(if: LexiconDumpTests.path != nil))
+    func dumpCommonWords() throws {
+        let lexicon = try #require(Lexicon.shared)
+        let url = try #require(Bundle.main.url(forResource: "CEDICT", withExtension: "tsv"))
+        var best: [String: Int] = [:]
+        for line in try String(contentsOf: url, encoding: .utf8).split(separator: "\n") {
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard f.count > 3, let freq = Int(f[3]), freq >= 1500 else { continue }
+            best[String(f[0]), default: 0] = max(best[String(f[0])] ?? 0, freq)
+        }
+        var out = ""
+        for (hanzi, _) in best.sorted(by: { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }) {
+            let empty = ResolvedNote(hanzi: .init(value: hanzi, status: .confirmed), pinyin: .absent, english: .absent, diagnostics: [])
+            let reading = lexicon.reading(of: hanzi, in: empty)
+            let gloss = reading.flatMap { lexicon.gloss(of: hanzi, pinyin: $0.pinyin) } ?? ""
+            out += "\(hanzi)\t\(reading?.pinyin ?? "")\t\(gloss)\n"
+        }
+        try out.write(toFile: try #require(Self.path), atomically: true, encoding: .utf8)
+    }
+}
