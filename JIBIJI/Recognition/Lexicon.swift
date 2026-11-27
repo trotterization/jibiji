@@ -525,14 +525,19 @@ final class Lexicon: @unchecked Sendable {
     }
 
     private static let pronunciationNote = try! NSRegularExpression(pattern: "\\s*\\((?:Taiwan|also|Tw) pr\\.[^)]*\\)")
+    /// A classifier note inside a sense (`cat (CL:隻|只[zhi1])`): the note goes, the sense stays.
+    private static let classifierNote = try! NSRegularExpression(pattern: "\\s*\\(CL:[^)]*\\)")
 
     /// Real senses only, as plain English: no classifier lists (`CL:个`), cross-references, pronunciation notes
     /// (`(Taiwan pr. [han4])`), or senses that quote Hanzi or dictionary Pinyin (`used in 上聲|上声[shang3 sheng1]`),
     /// which would otherwise be written into the student's notes.
     static func cleanSenses(_ glosses: [String]) -> [String] {
         glosses.compactMap { raw in
-            let g = pronunciationNote.stringByReplacingMatches(in: raw, range: NSRange(raw.startIndex..., in: raw), withTemplate: "")
-                .trimmingCharacters(in: .whitespaces)
+            var g = raw
+            for note in [pronunciationNote, classifierNote] {
+                g = note.stringByReplacingMatches(in: g, range: NSRange(g.startIndex..., in: g), withTemplate: "")
+            }
+            g = g.trimmingCharacters(in: .whitespaces)
             let lower = g.lowercased()
             guard !g.isEmpty, !lower.hasPrefix("cl:"), !lower.hasPrefix("see "), !lower.hasPrefix("also pr."), !lower.hasPrefix("taiwan pr."),
                   !lower.hasPrefix("(old)"), !lower.hasPrefix("used in"), !lower.hasPrefix("abbr. for"),

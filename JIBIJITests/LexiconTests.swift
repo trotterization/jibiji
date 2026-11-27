@@ -15,6 +15,13 @@ import Testing
         #expect(lexicon.rows(forHanzi: "电脑").first?.numbered == "dian4 nao3")
     }
 
+    @Test func aClassifierNoteInsideASenseDropsOnlyTheNote() {
+        // 猫 is "cat (CL:隻|只[zhi1]) | (dialect) to hide oneself": the card says cat, not the dialect sense.
+        #expect(Lexicon.cleanSenses(["cat (CL:隻|只[zhi1])", "(dialect) to hide oneself"]) == ["cat", "(dialect) to hide oneself"])
+        #expect(Lexicon.shortGloss(["cat (CL:隻|只[zhi1])", "(dialect) to hide oneself"]).hasPrefix("cat"))
+        #expect(Lexicon.cleanSenses(["CL:個|个[ge4]"]).isEmpty, "a sense that is only a classifier list still goes")
+    }
+
     @Test func numberedTonesBecomeMarks() {
         #expect(Lexicon.toneMarked("hao3 xiang4") == "hǎoxiàng")
         #expect(Lexicon.toneMarked("nu:3") == "nǚ")
