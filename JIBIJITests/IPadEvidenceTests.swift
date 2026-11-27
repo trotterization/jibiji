@@ -45,7 +45,8 @@ enum IPadEvidence {
     }
 
     @MainActor
-    static func run(_ drawing: PKDrawing, reader: any InkLineReader, annotations folder: URL? = nil, pageID: String = "page-1") async -> Outcome {
+    static func run(_ drawing: PKDrawing, reader: any InkLineReader, annotations folder: URL? = nil, pageID: String = "page-1",
+                    preview: String? = nil) async -> Outcome {
         var outcome = Outcome()
         let dir = FileManager.default.temporaryDirectory.appending(path: "ipad-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -68,6 +69,10 @@ enum IPadEvidence {
                 outcome.suggestions.append("fields: Hanzi \(f.hanzi.count) “\(f.hanziText ?? "-")”, Pinyin \(f.pinyin.count) “\(f.pinyinText ?? "-")” written=\(f.pinyinWritten), English \(f.english.count) “\(f.englishText ?? "-")”; \(item.proposal.pinyinState)")
             }
             if let plan = InlineReplacement.plan(for: item, in: drawing, pageWidth: 1180) {
+                if let preview {
+                    Preview.write(PKDrawing(strokes: drawing.strokes.filter { !plan.removed.contains(InkSelection.identity($0)) } + plan.added),
+                                  name: "\(preview)-\(outcome.replace.count)")
+                }
                 let ink = drawing.strokes.map { (id: InkSelection.identity($0), box: InlineReplacement.pathBounds([$0])) }
                 let removed = ink.filter { plan.removed.contains($0.id) }
                 // Only where the Hanzi were read apart from the Latin: a shared cell lists every stroke under each field.
@@ -140,7 +145,7 @@ struct IPadReplayTests {
                 }
             }
             let reader = IPadEvidence.RecordedReader(regions: regions)
-            var outcome = await IPadEvidence.run(drawing, reader: reader)
+            var outcome = await IPadEvidence.run(drawing, reader: reader, preview: "replay-" + url.deletingPathExtension().lastPathComponent)
             outcome.lines = try await reader.lines(in: drawing).map(\.text)
             for problem in outcome.broken { Issue.record("\(url.lastPathComponent): \(problem)") }
             sections.append(("\(url.deletingPathExtension().lastPathComponent) · build \(record.build ?? "?")", outcome, record.lines.map(\.text)))

@@ -81,6 +81,22 @@ enum InlineReplacement {
             }
             return nil
         }
+        /// Writes Pinyin: the letters in the typeface without its accents, which are specks at handwriting size, then each
+        /// tone mark drawn at a hand's size over its letter, as on the student's own Pinyin.
+        func writePinyin(_ text: String, x: CGFloat, baseline: CGFloat, em: CGFloat, pen: CleanHandwriting.Pen,
+                         scales: [CGFloat] = [1, 0.85, 0.7]) -> CGRect? {
+            let plain = Self.untoned(text)
+            let before = added.count
+            guard let box = write(plain, x: x, baseline: baseline, em: em, pen: pen, scales: scales) else { return nil }
+            let letters = Array(added[before...])
+            let natural = CleanHandwriting.bounds(of: plain, em: em)?.width ?? 0
+            let scale = natural > 0 ? box.width / natural : 1
+            guard plain != text, let marks = toneMarks(written: plain, target: text, strokes: letters, em: em * scale, pen: pen)?.marks,
+                  !marks.isEmpty else { return box }
+            added += marks
+            obstacles.append((id: "", rect: pathBounds(marks)))
+            return box.union(pathBounds(marks))
+        }
 
         // 1. Pinyin that is there: only its tone marks are fixed, on the student's own letters. A missing mark is added and
         //    a wrong one is taken off and written correctly; the letters stay. Pinyin cut short (`hǎo` for hǎoxiàng) gets the
@@ -102,7 +118,7 @@ enum InlineReplacement {
                 added += fix.marks
                 obstacles += fix.marks.map { (id: "", rect: pathBounds([$0])) }
                 if !tail.isEmpty {
-                    guard let box = write(tail, x: measured.bounds.maxX + 0.12 * measured.em, baseline: measured.end, em: measured.em, pen: pen, scales: [1, 0.85])
+                    guard let box = writePinyin(tail, x: measured.bounds.maxX + 0.12 * measured.em, baseline: measured.end, em: measured.em, pen: pen, scales: [1, 0.85])
                     else { return false }
                     measured.bounds = measured.bounds.union(box)
                     pinyin = measured
@@ -131,7 +147,7 @@ enum InlineReplacement {
                 added.removeAll()
                 removed = Set(fields.pinyin.map(InkSelection.identity))
                 obstacles = all.map { (id: $0.id, rect: pathBounds([$0.stroke])) }
-                guard let box = write(candidate.pinyin, x: measured.bounds.minX, baseline: measured.baseline, em: measured.em, pen: pen)
+                guard let box = writePinyin(candidate.pinyin, x: measured.bounds.minX, baseline: measured.baseline, em: measured.em, pen: pen)
                 else { return none("no room for the Pinyin") }
                 measured.end = measured.baseline
                 measured.bounds = box
@@ -170,10 +186,10 @@ enum InlineReplacement {
             let pen = CleanHandwriting.Pen.matching(fields.english.isEmpty ? fields.hanzi : fields.english)
             let right = max(hanziEnd.maxX, english?.bounds.maxX ?? 0)
             let above = CleanHandwriting.bounds(of: candidate.pinyin, em: em).map { hanzi.bounds.minY - 0.2 * em - $0.maxY } ?? 0
-            var box = write(candidate.pinyin, x: hanziEnd.maxX + 0.4 * em, baseline: baseline, em: em, pen: pen, scales: english == nil ? [1, 0.85, 0.7] : [1, 0.85])
+            var box = writePinyin(candidate.pinyin, x: hanziEnd.maxX + 0.4 * em, baseline: baseline, em: em, pen: pen, scales: english == nil ? [1, 0.85, 0.7] : [1, 0.85])
             var line = baseline
-            if box == nil { box = write(candidate.pinyin, x: hanzi.bounds.minX, baseline: above, em: em, pen: pen, scales: [1, 0.85]); line = above }
-            if box == nil { box = write(candidate.pinyin, x: right + 0.5 * em, baseline: baseline, em: em, pen: pen); line = baseline }
+            if box == nil { box = writePinyin(candidate.pinyin, x: hanzi.bounds.minX, baseline: above, em: em, pen: pen, scales: [1, 0.85]); line = above }
+            if box == nil { box = writePinyin(candidate.pinyin, x: right + 0.5 * em, baseline: baseline, em: em, pen: pen); line = baseline }
             guard let box else { return none("no room for the missing Pinyin") }
             pinyin = Measure(bounds: box, baseline: line, end: line, em: em)
         }
@@ -387,6 +403,13 @@ enum InlineReplacement {
             if !Lexicon.foldedLetters(String(character)).isEmpty { count += 1 }
         }
         return (head, rest.trimmingCharacters(in: .whitespaces))
+    }
+
+    /// `text` with its tone marks taken off; ü keeps its dots.
+    static func untoned(_ text: String) -> String {
+        let marks: Set<UInt32> = [0x0304, 0x0301, 0x030C, 0x0300]
+        let kept = text.decomposedStringWithCanonicalMapping.unicodeScalars.filter { !marks.contains($0.value) }
+        return String(String.UnicodeScalarView(kept)).precomposedStringWithCanonicalMapping
     }
 
     /// `target`'s letters, without tones, in the words `read` was read as, when they correspond letter for letter.

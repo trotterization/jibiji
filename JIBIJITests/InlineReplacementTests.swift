@@ -167,14 +167,14 @@ struct InlineReplacementTests {
         #expect(ids(page.drawing) == ids(ink))
     }
 
-    @Test func pinyinCutShortGetsOnlyTheMissingSyllable() throws {
+    @Test func pinyinCutShortGetsOnlyTheMissingSyllableAndTheMeaning() throws {
         let dir = folder(); defer { try? FileManager.default.removeItem(at: dir) }
-        // 好像 with only `hao` written: ǎ goes over it and `xiàng` after it. Proposed from the dictionary as Suggest does
-        // (the test pages' starter list does not take Pinyin cut short); this proposal carries no meaning, so none is added.
+        // 好像 with only `hao` written: ǎ goes over it, `xiàng` after it with a hand-sized mark, then the dictionary meaning.
         let (_, ink, parts) = try page([Piece(text: "好像", x: 80, em: 90, kind: .hanzi), Piece(text: "hao", x: 330, em: 46, kind: .pinyin)],
                                        read: note("好像", "hao", nil), folder: dir)
         let vocabulary = StarterVocabulary(entries: StarterVocabulary.standard.entries, lexicon: Lexicon.shared)
         let proposal = try #require(vocabulary.phraseProposal(for: note("好像", "hao", nil)))
+        #expect(proposal.candidates.first?.gloss == "to seem like; to look like", "a known word gets the same meaning as everywhere else")
         var item = PendingSuggestion(revision: 0, anchor: .zero, recognizedText: "好像 hao", proposal: proposal)
         item.sourceStrokeIDs = Set(ids(ink))
         item.fieldInk = FieldInk(hanzi: Set(parts[.hanzi]!.map(InkSelection.identity)), pinyin: Set(parts[.pinyin]!.map(InkSelection.identity)),
@@ -186,10 +186,14 @@ struct InlineReplacementTests {
         let new = plan.added.map { InlineReplacement.pathBounds([$0]) }
         #expect(new.contains { $0.midX > hao.minX && $0.midX < hao.maxX && $0.maxY < hao.midY }, "a mark over hao")
         let after = new.filter { $0.minX > hao.maxX }.reduce(CGRect.null) { $0.union($1) }
-        let xiang = try #require(CleanHandwriting.bounds(of: "xiàng", em: 46))
-        #expect(abs(after.width - xiang.width) < 0.25 * xiang.width, "xiàng after hao, at its size: \(after.width) vs \(xiang.width)")
-        #expect(abs(after.height - xiang.height) < 0.3 * xiang.height)
+        let gloss = try #require(proposal.candidates.first?.gloss)
+        let expected = try #require(CleanHandwriting.bounds(of: "xiang " + gloss, em: 46))
+        #expect(abs(after.width - expected.width) < 0.25 * expected.width, "xiàng and the meaning, on the line: \(after.width) vs \(expected.width)")
         #expect(after.midY > hao.minY && after.midY < hao.maxY + 20)
+        // The mark on the added xiàng is drawn at a hand's size, not the typeface's speck of an accent.
+        let xiang = try #require(CleanHandwriting.bounds(of: "xiang", em: 46)).offsetBy(dx: hao.maxX, dy: 0)
+        let marks = new.filter { $0.minX > hao.maxX && $0.maxX < hao.maxX + xiang.width + 0.4 * 46 && $0.maxY < hao.midY }
+        #expect(marks.contains { $0.width >= 0.2 * 46 }, "a falling mark the size of a hand-written one: \(marks.map(\.width))")
     }
 
     @Test func dividingAWordAfterWhatWasWritten() {
